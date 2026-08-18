@@ -694,6 +694,28 @@ header{
 .eyebrow{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--rouge);font-weight:700}
 header h1{font-size:19px;margin:2px 0 0;font-weight:700}
 .hdr-right{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:12px}
+#btnSvMode.active{background:var(--rouge);color:#fff;border-color:var(--rouge);font-weight:600}
+
+/* ---- barre de recherche d'adresse (en-tete) ---- */
+.searchbox{position:relative;flex:1 1 260px;max-width:420px}
+.searchbox input{padding-right:26px}
+#qAdrClear{position:absolute;right:2px;top:2px;bottom:2px;width:22px;padding:0;border:0;
+           background:transparent;color:var(--gris);font-size:12px;line-height:1;display:none}
+#qAdrClear:hover{background:transparent;color:var(--rouge)}
+.searchbox.filled #qAdrClear{display:block}
+.sugg{position:absolute;top:100%;left:0;right:0;z-index:1200;margin-top:2px;background:#fff;
+      border:1px solid var(--bord);border-radius:4px;max-height:280px;overflow:auto;
+      box-shadow:0 4px 12px rgba(0,0,0,.15);display:none}
+.sugg.open{display:block}
+.sugg-item{display:flex;align-items:center;gap:8px;padding:6px 9px;font-size:13px;
+           cursor:pointer;border-bottom:1px solid #eee}
+.sugg-item:last-child{border-bottom:0}
+.sugg-item:hover,.sugg-item.on{background:#f6e7e8}
+.sugg-item .txt{flex:1;min-width:0}
+.sugg-item .lib{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sugg-item .sub{display:block;font-size:11.5px;color:var(--gris)}
+.sugg-item .sv{flex:0 0 auto;padding:1px 6px;font-size:12px;line-height:1.3}
+.sugg-vide{padding:8px 9px;font-size:12.5px;color:var(--gris)}
 #syncBadge{padding:3px 9px;border-radius:12px;background:var(--fond);border:1px solid var(--bord);font-size:11px}
 #syncBadge.ok{background:#eaf3e2;border-color:#c3d9ae;color:#3d6320}
 #syncBadge.err{background:#fbeaea;border-color:#e8bcbc;color:var(--rouge)}
@@ -703,7 +725,7 @@ header h1{font-size:19px;margin:2px 0 0;font-weight:700}
   flex:0 0 300px;background:var(--fond);border-right:1px solid var(--bord);
   overflow-y:auto;padding:12px;
 }
-.mapwrap{flex:1 1 auto;display:flex;flex-direction:column;min-width:0}
+.mapwrap{flex:1 1 auto;display:flex;flex-direction:column;min-width:0;position:relative}
 #map{flex:1 1 auto;height:0;position:relative;z-index:1}
 
 #form{
@@ -765,6 +787,21 @@ td.cmt{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap
 
 .sv-wrap{margin-top:8px;border:1px solid var(--bord);border-radius:4px;overflow:hidden}
 .sv-wrap iframe{width:100%;height:230px;border:0;display:block}
+
+/* Panneau Street View flottant : enfant de #map, donc colle a la vue carte
+   quelle que soit l'ouverture du tableau. bottom:24px laisse voir l'attribution. */
+#svPanel{position:absolute;right:10px;bottom:24px;width:400px;max-width:calc(100% - 20px);
+         z-index:1100;display:none;background:#fff;border:1px solid var(--bord);
+         border-radius:4px;box-shadow:0 4px 16px rgba(0,0,0,.28);overflow:hidden}
+#svPanel.open{display:block}
+.sv-head{display:flex;align-items:center;gap:6px;padding:5px 8px;background:var(--fond);
+         border-bottom:1px solid var(--bord);font-size:12.5px}
+#svTitre{flex:1;min-width:0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sv-head a{color:var(--gris);text-decoration:none;font-size:15px;padding:0 3px;line-height:1}
+.sv-head a:hover{color:var(--rouge)}
+.sv-head button{padding:1px 7px;font-size:12px}
+#svPanelFrame{width:100%;height:270px;border:0;display:block}
+.toolbar .hint{margin:0}
 .meta{font-size:11.5px;color:var(--gris);line-height:1.5}
 .hint{font-size:11.5px;color:var(--gris);line-height:1.45;margin:6px 0 0}
 .toolbar{padding:6px 10px;border-top:1px solid var(--bord);background:var(--fond);
@@ -783,6 +820,9 @@ body.lecture .ro-note{display:block}
   .layout{flex-direction:column}
   #panel{flex:0 0 auto;max-height:40vh;border-right:0;border-bottom:1px solid var(--bord)}
   #form{flex:0 0 auto;max-height:50vh;border-left:0;border-top:1px solid var(--bord)}
+  .searchbox{flex:1 1 100%;max-width:none;order:3}
+  #svPanel{left:10px;right:10px;width:auto}
+  #svPanelFrame{height:210px}
 }
 </style>
 </head>
@@ -793,8 +833,14 @@ body.lecture .ro-note{display:block}
     <div class="eyebrow">NCPA — Direction de la Maîtrise des Déchets</div>
     <h1>Signalements terrain — points de collecte</h1>
   </div>
+  <div class="searchbox">
+    <input type="text" id="qAdr" placeholder="Rechercher une rue, une adresse…" autocomplete="off" spellcheck="false">
+    <button id="qAdrClear" title="Effacer la recherche">✕</button>
+    <div id="qAdrList" class="sugg"></div>
+  </div>
   <div class="hdr-right">
     <span id="syncBadge">Mode local</span>
+    <button id="btnSvMode" title="Ouvrir Street View sur un point de la carte">Street View</button>
     <button id="btnTable">Tableau</button>
   </div>
 </header>
@@ -831,7 +877,7 @@ body.lecture .ro-note{display:block}
     </div>
     <button class="btn-full" id="btnPeriodeRaz" style="padding:4px">Effacer la période</button>
 
-    <label>Recherche libre (rue, commentaire, auteur)</label>
+    <label>Filtrer les signalements (rue, commentaire, auteur)</label>
     <input type="text" id="fTexte" placeholder="…">
 
     <h2>Synthèse</h2>
@@ -863,9 +909,19 @@ body.lecture .ro-note{display:block}
 
   <!-- ============ CARTE + TABLEAU ============ -->
   <div class="mapwrap">
-    <div id="map"></div>
+    <div id="map">
+      <div id="svPanel">
+        <div class="sv-head">
+          <span id="svTitre">Street View</span>
+          <a id="svOpen" href="#" target="_blank" rel="noopener" title="Ouvrir dans Google Maps">↗</a>
+          <button id="svHide" title="Fermer la vue">✕</button>
+        </div>
+        <iframe id="svPanelFrame" loading="lazy" allowfullscreen></iframe>
+      </div>
+    </div>
     <div class="toolbar">
       <span class="meta" id="coordInfo">—</span>
+      <span class="hint" id="svHint" style="display:none">Cliquez sur la carte (ou sur un signalement) pour ouvrir Street View à cet endroit.</span>
     </div>
     <div class="tablewrap" id="tablewrap">
       <table id="tbl">
@@ -1103,7 +1159,216 @@ let COUCHE = L.layerGroup().addTo(map);
 let MARQUEURS = {};      // id -> marker
 let SELECTION = null;    // id sélectionné
 let MODE_AJOUT = false;
+let MODE_SV = false;     // mode « clic sur la carte pour voir Street View »
 let BROUILLON = null;    // enregistrement en cours de création
+
+/* ---- modes exclusifs : les deux se disputent le clic carte ---- */
+function majModesUI(){
+  document.getElementById("btnAdd").classList.toggle("active", MODE_AJOUT);
+  document.getElementById("btnSvMode").classList.toggle("active", MODE_SV);
+  document.getElementById("addHint").style.display = MODE_AJOUT ? "block" : "none";
+  document.getElementById("svHint").style.display  = MODE_SV ? "block" : "none";
+  document.getElementById("map").classList.toggle("map-adding", MODE_AJOUT || MODE_SV);
+}
+function setModeAjout(on){ MODE_AJOUT = on; if(on) MODE_SV = false; majModesUI(); }
+function setModeSv(on){    MODE_SV = on; if(on) MODE_AJOUT = false; majModesUI(); }
+
+/* =========================================================================
+   RECHERCHE D'ADRESSE (API BAN) — restreinte au territoire NCPA
+   ========================================================================= */
+// Codes INSEE des 38 communes de la CC Normandie-Cabourg-Pays d'Auge (EPCI 200065563).
+// Source : https://geo.api.gouv.fr/epcis/200065563/communes — relevé le 18/08/2026.
+// À mettre à jour si le périmètre de l'intercommunalité évolue.
+const NCPA_INSEE = new Set([
+  "14009","14012","14024","14045","14046","14070","14106","14110","14117","14198",
+  "14203","14225","14227","14229","14231","14246","14305","14306","14308","14316",
+  "14328","14329","14335","14338","14409","14494","14499","14524","14530","14550",
+  "14598","14606","14657","14660","14665","14698","14724","14743"
+]);
+
+// Les 12 codes postaux couvrant ces communes. La BAN ne prend qu'un seul filtre
+// par requête : on interroge donc un code postal par requête, en parallèle.
+// Indispensable — une requête nationale sur « rue du moulin » ne ramène que des
+// rues de Caen ou du Havre, et le filtre INSEE ne laisse alors rien passer.
+// Ces codes postaux débordent du territoire (Troarn, Bonnebosq…), d'où le
+// second filtre sur NCPA_INSEE appliqué aux résultats.
+const NCPA_CP = ["14121","14160","14340","14390","14430","14510",
+                 "14640","14670","14810","14850","14860","14940"];
+
+// Couche dédiée : dessiner() vide COUCHE à chaque filtre, le repère de recherche
+// doit donc vivre ailleurs pour ne pas disparaître au premier changement de filtre.
+const ADR_LAYER = L.layerGroup().addTo(map);
+
+const qAdr     = document.getElementById("qAdr");
+const qAdrList = document.getElementById("qAdrList");
+let SUGG = [];        // résultats actuellement affichés
+let SUGG_I = -1;      // ligne surlignée au clavier
+let SUGG_SEQ = 0;     // ignore une réponse arrivée après une plus récente
+let SUGG_T = null;    // minuterie de l'anti-rebond
+let SUGG_ABORT = null; // annule le lot de requêtes d'une recherche dépassée
+
+function fermerSugg(){ qAdrList.classList.remove("open"); SUGG_I = -1; }
+
+function poserMarqueurAdresse(lat, lon, libelle){
+  ADR_LAYER.clearLayers();
+  L.marker([lat,lon],{icon:L.divIcon({
+      className:"", iconSize:[20,20], iconAnchor:[10,10],
+      html:'<div class="pin" style="background:var(--vert)"></div>'
+    })})
+   .bindTooltip(libelle,{permanent:true, direction:"top", offset:[0,-12]})
+   .addTo(ADR_LAYER);
+}
+
+function allerA(lat, lon, libelle){
+  map.setView([lat,lon], 18);
+  poserMarqueurAdresse(lat, lon, libelle);
+  fermerSugg();
+}
+
+// Coordonnées collées directement (« 49.23456, -0.05123 ») : on saute au point
+// sans passer par la BAN — pratique pour recoller un relevé transmis par un agent.
+function litCoord(q){
+  const m = q.trim().match(/^(-?\d{1,2}\.\d+)[\s,;]+(-?\d{1,3}\.\d+)$/);
+  if(!m) return null;
+  const lat = parseFloat(m[1]), lon = parseFloat(m[2]);
+  if(Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  return {lat, lon};
+}
+
+function afficherSugg(items, messageVide){
+  SUGG = items; SUGG_I = -1;
+  qAdrList.innerHTML = items.length
+    ? items.map((it,i)=>'<div class="sugg-item" data-i="'+i+'">'
+        + '<span class="txt"><span class="lib">'+esc(it.lib)+'</span>'
+        + '<span class="sub">'+esc(it.sub)+'</span></span>'
+        + '<button class="sv" data-sv="1" title="Ouvrir Street View ici">◉</button>'
+        + '</div>').join("")
+    : '<div class="sugg-vide">'+esc(messageVide||"")+'</div>';
+  qAdrList.classList.add("open");
+  qAdrList.querySelectorAll(".sugg-item").forEach(el=>{
+    el.onclick = ev=>{
+      const it = SUGG[+el.dataset.i]; if(!it) return;
+      allerA(it.lat, it.lon, it.lib);
+      if(ev.target.dataset.sv) ouvrirSvFlottant(it.lat, it.lon, it.lib);
+    };
+  });
+}
+
+async function chercherAdresse(q){
+  const jeton = ++SUGG_SEQ;
+  const c = litCoord(q);
+  if(c){
+    afficherSugg([{lat:c.lat, lon:c.lon,
+      lib:c.lat.toFixed(5)+", "+c.lon.toFixed(5), sub:"Aller à ces coordonnées"}]);
+    return;
+  }
+  if(SUGG_ABORT) SUGG_ABORT.abort();   // le lot précédent ne sert plus à rien
+  const ctrl = SUGG_ABORT = new AbortController();
+
+  const lots = await Promise.all(NCPA_CP.map(cp =>
+    fetch("https://api-adresse.data.gouv.fr/search/?limit=5&postcode=" + cp
+          + "&q=" + encodeURIComponent(q), {signal:ctrl.signal})
+      .then(r => r.json())
+      .catch(() => null)                 // un code postal muet ne fait pas tomber le reste
+  ));
+  if(jeton !== SUGG_SEQ) return;                   // réponse périmée, une plus récente est partie
+  if(!lots.some(Boolean)){ afficherSugg([], "Recherche indisponible (hors ligne)."); return; }
+
+  const vus = new Set();
+  const classes = lots.filter(Boolean)
+    .flatMap(j => j.features || [])
+    .filter(f => f.properties && NCPA_INSEE.has(f.properties.citycode))
+    .filter(f => { const k = f.properties.id || f.properties.label;
+                   if(vus.has(k)) return false; vus.add(k); return true; })
+    .sort((a,b) => (b.properties.score||0) - (a.properties.score||0));
+
+  // La BAN répond toujours quelque chose, même à côté de la plaque : sans coupure
+  // sur le score, « rue de rivoli » remonterait « Rue de la Rivière », « Rue de
+  // Berlin »… Plancher absolu (le bruit plafonne vers 0,42) doublé d'une coupure
+  // relative au meilleur résultat, qui élague la traîne des quasi-homonymes.
+  const meilleur = classes.length ? (classes[0].properties.score||0) : 0;
+  const seuil = Math.max(0.45, meilleur * 0.55);
+
+  const items = classes
+    .filter(f => (f.properties.score||0) >= seuil)
+    .slice(0,8)
+    .map(f => ({
+      lat: f.geometry.coordinates[1],
+      lon: f.geometry.coordinates[0],
+      lib: f.properties.name || f.properties.label || "",
+      sub: [f.properties.postcode, f.properties.city].filter(Boolean).join(" ")
+    }));
+  afficherSugg(items, "Aucune adresse trouvée sur le territoire NCPA.");
+}
+
+qAdr.oninput = ()=>{
+  const q = qAdr.value.trim();
+  qAdr.parentNode.classList.toggle("filled", q.length > 0);
+  clearTimeout(SUGG_T);
+  if(q.length < 3){ SUGG_SEQ++; SUGG = []; fermerSugg(); return; }
+  SUGG_T = setTimeout(()=>chercherAdresse(q), 350);  // un lot = 12 requêtes, on temporise
+};
+
+qAdr.onkeydown = e=>{
+  if(e.key === "Escape"){ fermerSugg(); return; }
+  const n = SUGG.length;
+  if(e.key === "ArrowDown" || e.key === "ArrowUp"){
+    if(!n || !qAdrList.classList.contains("open")) return;
+    e.preventDefault();
+    const bas = e.key === "ArrowDown";
+    SUGG_I = SUGG_I < 0 ? (bas ? 0 : n-1) : (SUGG_I + (bas ? 1 : n-1)) % n;
+    qAdrList.querySelectorAll(".sugg-item").forEach((el,i)=>el.classList.toggle("on", i===SUGG_I));
+    return;
+  }
+  if(e.key === "Enter"){
+    e.preventDefault();
+    const it = SUGG[SUGG_I >= 0 ? SUGG_I : 0];
+    if(it) allerA(it.lat, it.lon, it.lib);
+  }
+};
+
+document.getElementById("qAdrClear").onclick = ()=>{
+  qAdr.value = ""; qAdr.parentNode.classList.remove("filled");
+  SUGG_SEQ++; SUGG = []; ADR_LAYER.clearLayers(); fermerSugg(); qAdr.focus();
+};
+document.addEventListener("click", e=>{
+  if(e.target.closest && !e.target.closest(".searchbox")) fermerSugg();
+});
+
+/* =========================================================================
+   STREET VIEW — panneau flottant, indépendant de la fiche
+   ========================================================================= */
+const svPanel = document.getElementById("svPanel");
+// Le panneau est un enfant du conteneur Leaflet : sans ces deux garde-fous,
+// un clic ou une molette dedans piloterait la carte en dessous.
+L.DomEvent.disableClickPropagation(svPanel);
+L.DomEvent.disableScrollPropagation(svPanel);
+let SV_SEQ = 0;
+
+async function ouvrirSvFlottant(lat, lon, titre){
+  const jeton = ++SV_SEQ;
+  const la = (+lat).toFixed(6), lo = (+lon).toFixed(6);
+  document.getElementById("svPanelFrame").src =
+    "https://maps.google.com/maps?q=&layer=c&cbll=" + la + "," + lo + "&cbp=11,0,0,0,0&output=svembed";
+  document.getElementById("svOpen").href =
+    "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=" + la + "," + lo;
+  document.getElementById("svTitre").textContent = titre || (la + ", " + lo);
+  svPanel.classList.add("open");
+  setModeSv(false);                       // le mode se désarme après usage
+  if(!titre){                             // pas de libellé connu : on interroge la BAN
+    const p = await banReverse(lat, lon);
+    if(p && jeton === SV_SEQ && svPanel.classList.contains("open")){
+      const l = [p.name, p.city].filter(Boolean).join(" — ");
+      if(l) document.getElementById("svTitre").textContent = l;
+    }
+  }
+}
+
+document.getElementById("btnSvMode").onclick = ()=>setModeSv(!MODE_SV);
+document.getElementById("svHide").onclick = ()=>{
+  svPanel.classList.remove("open");
+  document.getElementById("svPanelFrame").src = "";   // stoppe le flux Google en arrière-plan
+};
 
 /* ---- initialisation des listes déroulantes ---- */
 function remplirTypes(){
@@ -1153,7 +1418,10 @@ function dessiner(){
   const vus = filtrer();
   vus.forEach(r=>{
     const m = L.marker([r.lat,r.lon],{icon:icone(r.statut, r.id===SELECTION)});
-    m.on("click", ()=>ouvrirFiche(r.id));
+    m.on("click", ()=>{
+      if(MODE_SV) ouvrirSvFlottant(r.lat, r.lon, [r.rue, r.commune].filter(Boolean).join(" — "));
+      else ouvrirFiche(r.id);
+    });
     m.on("dragend", ev=>{
       const p = ev.target.getLatLng();
       const rec = DATA.find(x=>x.id===r.id) || BROUILLON;
@@ -1297,19 +1565,12 @@ document.getElementById("btnSv").onclick = ()=>{
 /* =========================================================================
    CRÉATION
    ========================================================================= */
-document.getElementById("btnAdd").onclick = ()=>{
-  MODE_AJOUT = !MODE_AJOUT;
-  document.getElementById("btnAdd").classList.toggle("active",MODE_AJOUT);
-  document.getElementById("addHint").style.display = MODE_AJOUT?"block":"none";
-  document.getElementById("map").classList.toggle("map-adding",MODE_AJOUT);
-};
+document.getElementById("btnAdd").onclick = ()=>setModeAjout(!MODE_AJOUT);
 
 map.on("click", async e=>{
+  if(MODE_SV){ ouvrirSvFlottant(e.latlng.lat, e.latlng.lng); return; }
   if(!MODE_AJOUT) return;
-  MODE_AJOUT=false;
-  document.getElementById("btnAdd").classList.remove("active");
-  document.getElementById("addHint").style.display="none";
-  document.getElementById("map").classList.remove("map-adding");
+  setModeAjout(false);
 
   const rec = {
     id: "SIG-" + Date.now().toString(36).toUpperCase() + "-" + Math.random().toString(36).slice(2,5).toUpperCase(),
@@ -1338,19 +1599,25 @@ map.on("click", async e=>{
   geocodeInverse(rec.lat,rec.lon,true);
 });
 
-/* Géocodage inverse BAN : pré-remplit rue + commune (jamais écrasé si déjà saisi) */
-async function geocodeInverse(lat,lon,forcer){
+/* Appel unique à la BAN inverse : renvoie les propriétés de l'adresse la plus proche,
+   ou null. Partagé entre le pré-remplissage de la fiche et le titre du panneau Street View. */
+async function banReverse(lat,lon){
   try{
     const r = await fetch(`https://api-adresse.data.gouv.fr/reverse/?lon=${lon}&lat=${lat}`);
     const j = await r.json();
-    const p = j.features && j.features[0] && j.features[0].properties;
-    if(!p) return;
-    const rue = p.street || p.name || "";
-    if(forcer || !fmv("Rue"))     fm("Rue", rue);
-    if(forcer || !fmv("Commune")) fm("Commune", p.city || "");
-    const cible = BROUILLON || DATA.find(x=>x.id===SELECTION);
-    if(cible) cible.code_insee = p.citycode || "";
-  }catch(e){ /* hors ligne : saisie manuelle */ }
+    return (j.features && j.features[0] && j.features[0].properties) || null;
+  }catch(e){ return null; }   /* hors ligne : saisie manuelle */
+}
+
+/* Géocodage inverse BAN : pré-remplit rue + commune (jamais écrasé si déjà saisi) */
+async function geocodeInverse(lat,lon,forcer){
+  const p = await banReverse(lat,lon);
+  if(!p) return;
+  const rue = p.street || p.name || "";
+  if(forcer || !fmv("Rue"))     fm("Rue", rue);
+  if(forcer || !fmv("Commune")) fm("Commune", p.city || "");
+  const cible = BROUILLON || DATA.find(x=>x.id===SELECTION);
+  if(cible) cible.code_insee = p.citycode || "";
 }
 
 /* =========================================================================
