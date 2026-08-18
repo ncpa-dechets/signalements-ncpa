@@ -1046,6 +1046,11 @@ const cle    = () => localStorage.getItem(LS_CLE) || "";
    (facultative). v = code stocké, e = emoji d'affichage, l = libellé exporté.
    L'emoji n'est JAMAIS concaténé au libellé : il ne sert qu'aux menus. */
 const CATEGORIES = [
+  {v:"collecte", e:"🚛", l:"Problèmes de collecte", sous:[
+    {v:"collecte_oubli", l:"Collecte non effectuée (oubli)"},
+    {v:"collecte_refus", l:"Collecte non effectuée (refus)"},
+    {v:"stationnement",  l:"Stationnement gênant la circulation de la benne"}
+  ]},
   {v:"bacs", e:"🗑️", l:"Bacs et conteneurs", sous:[
     {v:"debordement",          l:"Débordement de bacs collectifs"},
     {v:"bac_manquant",         l:"Bac manquant / volé"},
@@ -1058,12 +1063,7 @@ const CATEGORIES = [
     {v:"claustra",      l:"Claustra en mauvais état"},
     {v:"colonne",       l:"Colonne en mauvais état"},
     {v:"vegetation",    l:"Végétation envahissante autour du point de collecte"},
-    {v:"acces_bloque",  l:"Accès au point de collecte bloqué / difficile / sale"},
-    {v:"stationnement", l:"Stationnement gênant la circulation de la benne"}
-  ]},
-  {v:"collecte", e:"🚛", l:"Problèmes de collecte", sous:[
-    {v:"collecte_oubli", l:"Collecte non effectuée (oubli)"},
-    {v:"collecte_refus", l:"Collecte non effectuée (refus)"}
+    {v:"acces_bloque",  l:"Accès au point de collecte bloqué / difficile / sale"}
   ]},
   {v:"comportements", e:"🚯", l:"Comportements et dépôts", sous:[
     {v:"depot_sauvage",     l:"Dépôt sauvage / encombrants à proximité"},
