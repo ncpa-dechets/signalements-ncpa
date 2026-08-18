@@ -882,8 +882,11 @@ body.lecture .ro-note{display:block}
     <div class="filtre-line"><input type="checkbox" class="fSt" value="encours" checked><span class="dot" style="background:var(--st-encours)"></span> En cours de traitement</div>
     <div class="filtre-line"><input type="checkbox" class="fSt" value="regle" checked><span class="dot" style="background:var(--st-regle)"></span> Réglé</div>
 
-    <label>Type de problème</label>
-    <select id="fType"><option value="">Tous</option></select>
+    <label>Catégorie de problème</label>
+    <select id="fType"><option value="">Toutes</option></select>
+
+    <label>Précision</label>
+    <select id="fSousType" disabled><option value="">Toutes</option></select>
 
     <label>Commune</label>
     <select id="fCommune"><option value="">Toutes</option></select>
@@ -895,7 +898,7 @@ body.lecture .ro-note{display:block}
     </div>
     <button class="btn-full" id="btnPeriodeRaz" style="padding:4px">Effacer la période</button>
 
-    <label>Filtrer les signalements (rue, commentaire, auteur)</label>
+    <label>Filtrer les signalements (rue, commentaire, auteur, type)</label>
     <input type="text" id="fTexte" placeholder="…">
 
     <h2>Synthèse</h2>
@@ -947,7 +950,8 @@ body.lecture .ro-note{display:block}
           <th data-k="date_signalement">Date</th>
           <th data-k="commune">Commune</th>
           <th data-k="rue">Rue</th>
-          <th data-k="type">Type</th>
+          <th data-k="type">Catégorie</th>
+          <th data-k="sous_type">Précision</th>
           <th data-k="statut">Statut</th>
           <th data-k="auteur">Signalé par</th>
           <th data-k="commentaire">Commentaire</th>
@@ -964,8 +968,11 @@ body.lecture .ro-note{display:block}
       <button id="btnFormClose" title="Fermer la fiche (Échap)">✕</button>
     </div>
 
-    <label>Type de problème</label>
+    <label>Catégorie de problème</label>
     <select id="fmType"></select>
+
+    <label>Précision</label>
+    <select id="fmSousType"></select>
 
     <label>Statut</label>
     <select id="fmStatut">
@@ -1035,11 +1042,43 @@ const CONFIG = {
 const LS_CLE = "ncpa_signalement_cle";
 const cle    = () => localStorage.getItem(LS_CLE) || "";
 
-const TYPES = [
-  {v:"stationnement", l:"Stationnement gênant la benne"},
-  {v:"pollution",     l:"Bacs régulièrement pollués"},
-  {v:"casse",         l:"Bacs cassés / dégradés"},
-  {v:"autre",         l:"Autre incident"}
+/* Types de problème sur deux niveaux : catégorie (obligatoire) + précision
+   (facultative). v = code stocké, e = emoji d'affichage, l = libellé exporté.
+   L'emoji n'est JAMAIS concaténé au libellé : il ne sert qu'aux menus. */
+const CATEGORIES = [
+  {v:"bacs", e:"🗑️", l:"Bacs et conteneurs", sous:[
+    {v:"debordement",          l:"Débordement de bacs collectifs"},
+    {v:"bac_manquant",         l:"Bac manquant / volé"},
+    {v:"bac_mal_positionne",   l:"Bac mal positionné / déplacé"},
+    {v:"couvercle",            l:"Couvercle / fermeture défectueuse"},
+    {v:"bac_non_conforme",     l:"Bac non conforme / taille inadaptée"},
+    {v:"equipement_endommage", l:"Équipement de collecte endommagé"}
+  ]},
+  {v:"points", e:"🏗️", l:"Points de regroupement et aménagements", sous:[
+    {v:"claustra",      l:"Claustra en mauvais état"},
+    {v:"colonne",       l:"Colonne en mauvais état"},
+    {v:"vegetation",    l:"Végétation envahissante autour du point de collecte"},
+    {v:"acces_bloque",  l:"Accès au point de collecte bloqué / difficile / sale"},
+    {v:"stationnement", l:"Stationnement gênant la circulation de la benne"}
+  ]},
+  {v:"collecte", e:"🚛", l:"Problèmes de collecte", sous:[
+    {v:"collecte_oubli", l:"Collecte non effectuée (oubli)"},
+    {v:"collecte_refus", l:"Collecte non effectuée (refus)"}
+  ]},
+  {v:"comportements", e:"🚯", l:"Comportements et dépôts", sous:[
+    {v:"depot_sauvage",     l:"Dépôt sauvage / encombrants à proximité"},
+    {v:"dechets_dangereux", l:"Déchets dangereux / toxiques jetés dans les bacs"},
+    {v:"tri_non_respecte",  l:"Consignes de tri non respectées"}
+  ]},
+  {v:"hygiene", e:"🐀", l:"Hygiène et nuisances", sous:[
+    {v:"odeurs",          l:"Odeurs nauséabondes persistantes"},
+    {v:"nuisibles",       l:"Présence de nuisibles"},
+    {v:"eaux_stagnantes", l:"Eaux stagnantes / infiltration"}
+  ]},
+  {v:"incidents", e:"🔥", l:"Incidents graves", sous:[
+    {v:"feu",        l:"Feu / incendie dans la benne ou à proximité"},
+    {v:"vandalisme", l:"Acte de vandalisme / malveillance"}
+  ]}
 ];
 const STATUTS = {
   signale:{l:"Signalé",              c:"#B91E27"},
@@ -1394,12 +1433,37 @@ document.getElementById("svHide").onclick = ()=>{
   document.getElementById("svPanelFrame").src = "";   // stoppe le flux Google en arrière-plan
 };
 
-/* ---- initialisation des listes déroulantes ---- */
-function remplirTypes(){
-  const o = TYPES.map(t=>`<option value="${t.v}">${t.l}</option>`).join("");
-  document.getElementById("fmType").innerHTML = o;
-  document.getElementById("fType").innerHTML = '<option value="">Tous</option>'+o;
+/* ---- initialisation des listes déroulantes (cascade catégorie → précision) ---- */
+const categorie = v => CATEGORIES.find(c=>c.v===v) || null;
+
+function optionsCat(vide){
+  return (vide!=null ? `<option value="">${vide}</option>` : "")
+    + CATEGORIES.map(c=>`<option value="${c.v}">${c.e} ${c.l}</option>`).join("");
 }
+function optionsSous(cat, vide){
+  const c = categorie(cat);
+  return `<option value="">${vide}</option>`
+    + (c ? c.sous.map(x=>`<option value="${x.v}">${x.l}</option>`).join("") : "");
+}
+
+function remplirTypes(){
+  document.getElementById("fmType").innerHTML = optionsCat();
+  document.getElementById("fmSousType").innerHTML = optionsSous("", "— non précisé —");
+  document.getElementById("fType").innerHTML = optionsCat("Toutes");
+  majSousFiltre();
+}
+// Changer la catégorie recharge la liste des précisions et remet sa valeur à vide.
+document.getElementById("fmType").onchange = ()=>{
+  document.getElementById("fmSousType").innerHTML =
+    optionsSous(document.getElementById("fmType").value, "— non précisé —");
+};
+function majSousFiltre(){
+  const cat = document.getElementById("fType").value;
+  const sel = document.getElementById("fSousType");
+  sel.innerHTML = optionsSous(cat, "Toutes");
+  sel.disabled  = !cat;             // inutilisable tant qu'aucune catégorie n'est choisie
+}
+document.getElementById("fType").onchange = ()=>{ majSousFiltre(); dessiner(); };
 remplirTypes();
 document.getElementById("auteurDefaut").value = localStorage.getItem(LS_AUTEUR)||"";
 document.getElementById("auteurDefaut").oninput = e=>localStorage.setItem(LS_AUTEUR,e.target.value.trim());
@@ -1410,6 +1474,7 @@ document.getElementById("auteurDefaut").oninput = e=>localStorage.setItem(LS_AUT
 function filtrer(){
   const st = [...document.querySelectorAll(".fSt:checked")].map(c=>c.value);
   const ty = document.getElementById("fType").value;
+  const sty = document.getElementById("fSousType").value;
   const co = document.getElementById("fCommune").value;
   const tx = document.getElementById("fTexte").value.trim().toLowerCase();
   const du = document.getElementById("fDu").value;
@@ -1418,11 +1483,13 @@ function filtrer(){
     if(r._del) return false;
     if(!st.includes(r.statut)) return false;
     if(ty && r.type!==ty) return false;
+    if(sty && (r.sous_type||"")!==sty) return false;
     if(co && r.commune!==co) return false;
     if(du && (r.date_signalement||"") < du) return false;
     if(au && (r.date_signalement||"") > au) return false;
     if(tx){
-      const blob = [r.rue,r.commune,r.commentaire,r.auteur].join(" ").toLowerCase();
+      const blob = [r.rue,r.commune,r.commentaire,r.auteur,
+                    libType(r.type),libSousType(r.type,r.sous_type)].join(" ").toLowerCase();
       if(!blob.includes(tx)) return false;
     }
     return true;
@@ -1479,12 +1546,12 @@ let TRI = {k:"date_signalement", asc:false};
 function majTable(vus){
   const tb = document.querySelector("#tbl tbody");
   const l = [...vus].sort((a,b)=>{
-    const x=(a[TRI.k]||"").toString(), y=(b[TRI.k]||"").toString();
+    const x=valeurTri(a,TRI.k), y=valeurTri(b,TRI.k);
     return TRI.asc ? x.localeCompare(y,"fr") : y.localeCompare(x,"fr");
   });
   tb.innerHTML = l.map(r=>`<tr data-id="${r.id}" class="${r.id===SELECTION?'sel':''}">
     <td>${fmtDate(r.date_signalement)}</td><td>${esc(r.commune)}</td><td>${esc(r.rue)}</td>
-    <td>${esc(libType(r.type))}</td>
+    <td>${esc(libType(r.type))}</td><td>${esc(libSousType(r.type,r.sous_type))}</td>
     <td><span class="badge" style="background:${STATUTS[r.statut].c}">${STATUTS[r.statut].l}</span></td>
     <td>${esc(r.auteur)}</td><td class="cmt">${esc(r.commentaire)}</td></tr>`).join("");
   tb.querySelectorAll("tr").forEach(tr=>{
@@ -1496,7 +1563,19 @@ document.querySelectorAll("#tbl th").forEach(th=>{
 });
 
 const esc = s => (s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const libType = v => (TYPES.find(t=>t.v===v)||{l:v||""}).l;
+// Code inconnu (ancien enregistrement) : on affiche le code brut plutôt que du vide.
+const libType = v => (categorie(v)||{l:v||""}).l;
+const libSousType = (cat,v)=>{
+  if(!v) return "";
+  const c = categorie(cat);
+  const s = c && c.sous.find(x=>x.v===v);
+  return s ? s.l : v;
+};
+// Le tri des deux colonnes de type porte sur le libellé affiché, pas sur le code.
+const valeurTri = (r,k)=>
+    k==="type"      ? libType(r.type)
+  : k==="sous_type" ? libSousType(r.type,r.sous_type)
+  : (r[k]||"").toString();
 const fmtDate = d => d ? d.split("-").reverse().join("/") : "";
 
 /* =========================================================================
@@ -1522,13 +1601,27 @@ function afficherHistorique(r){
 }
 
 function peupler(r){
-  fm("Type",r.type||"stationnement"); fm("Statut",r.statut||"signale");
+  peuplerType(r.type, r.sous_type); fm("Statut",r.statut||"signale");
   fm("Commune",r.commune||""); fm("Rue",r.rue||""); fm("Auteur",r.auteur||"");
   fm("Date", r.date_signalement || new Date().toISOString().slice(0,10));
   fm("Commentaire", r.commentaire||"");
   fm("Coord", r.lat+", "+r.lon);
   document.getElementById("svWrap").style.display="none";
   document.getElementById("svFrame").src="";
+}
+// Remplit le couple catégorie/précision. Un code absent du référentiel est ajouté
+// tel quel comme option, pour ne pas le perdre silencieusement à l'enregistrement.
+function peuplerType(cat, sous){
+  const sc = document.getElementById("fmType"), ss = document.getElementById("fmSousType");
+  sc.innerHTML = optionsCat();
+  if(cat && !categorie(cat)) sc.insertAdjacentHTML("beforeend",
+    `<option value="${esc(cat)}">${esc(cat)}</option>`);
+  sc.value = cat || CATEGORIES[0].v;
+  ss.innerHTML = optionsSous(sc.value, "— non précisé —");
+  const c = categorie(sc.value);
+  if(sous && !(c && c.sous.some(x=>x.v===sous))) ss.insertAdjacentHTML("beforeend",
+    `<option value="${esc(sous)}">${esc(sous)}</option>`);
+  ss.value = sous || "";
 }
 const fm = (n,v)=>{ document.getElementById("fm"+n).value = v; };
 const fmv = n => document.getElementById("fm"+n).value;
@@ -1554,7 +1647,7 @@ document.getElementById("btnSave").onclick = async ()=>{
   const base = BROUILLON || DATA.find(x=>x.id===SELECTION);
   if(!base) return;
   const rec = Object.assign({}, base, {
-    type: fmv("Type"), statut: fmv("Statut"),
+    type: fmv("Type"), sous_type: fmv("SousType"), statut: fmv("Statut"),
     commune: fmv("Commune").trim(), rue: fmv("Rue").trim(),
     auteur: fmv("Auteur").trim(), date_signalement: fmv("Date"),
     commentaire: fmv("Commentaire").trim()
@@ -1615,7 +1708,7 @@ map.on("click", async e=>{
   const rec = {
     id: "SIG-" + Date.now().toString(36).toUpperCase() + "-" + Math.random().toString(36).slice(2,5).toUpperCase(),
     lat:+e.latlng.lat.toFixed(6), lon:+e.latlng.lng.toFixed(6),
-    type:"stationnement", statut:"signale",
+    type:CATEGORIES[0].v, sous_type:"", statut:"signale",
     commune:"", rue:"", code_insee:"",
     auteur: localStorage.getItem(LS_AUTEUR)||"",
     date_signalement: new Date().toISOString().slice(0,10),
@@ -1663,7 +1756,8 @@ async function geocodeInverse(lat,lon,forcer){
 /* =========================================================================
    FILTRES / TABLEAU
    ========================================================================= */
-["fType","fCommune","fDu","fAu"].forEach(id=>document.getElementById(id).onchange=dessiner);
+// fType a son propre gestionnaire (il recharge la liste des précisions avant de redessiner).
+["fSousType","fCommune","fDu","fAu"].forEach(id=>document.getElementById(id).onchange=dessiner);
 document.getElementById("fTexte").oninput = dessiner;
 document.getElementById("btnPeriodeRaz").onclick = ()=>{
   document.getElementById("fDu").value=""; document.getElementById("fAu").value=""; dessiner();
@@ -1700,7 +1794,8 @@ document.getElementById("btnGeojson").onclick = ()=>{
     type:"Feature",
     geometry:{type:"Point", coordinates:[r.lon, r.lat]},   // WGS84 [lon, lat]
     properties:{
-      id:r.id, type:r.type, type_libelle:libType(r.type),
+      id:r.id, type:r.type||"", type_libelle:libType(r.type),
+      sous_type:r.sous_type||"", sous_type_libelle:libSousType(r.type,r.sous_type),
       statut:r.statut, statut_libelle:STATUTS[r.statut].l,
       commune:r.commune, code_insee:r.code_insee||"", rue:r.rue,
       auteur:r.auteur, date_signalement:r.date_signalement,
@@ -1712,7 +1807,8 @@ document.getElementById("btnGeojson").onclick = ()=>{
 };
 
 document.getElementById("btnCsv").onclick = ()=>{
-  const cols = ["id","date_signalement","commune","code_insee","rue","type_libelle","statut_libelle",
+  const cols = ["id","date_signalement","commune","code_insee","rue",
+                "type","type_libelle","sous_type","sous_type_libelle","statut_libelle",
                 "auteur","commentaire","lat","lon","date_prise_en_charge","date_reglement","date_maj"];
   const q = v => '"'+String(v==null?"":v).replace(/"/g,'""')+'"';
   const dateStatut = (r,s)=>{
@@ -1720,7 +1816,8 @@ document.getElementById("btnCsv").onclick = ()=>{
     return e ? e.date.slice(0,10) : "";
   };
   const lignes = filtrer().map(r=>[
-    r.id,r.date_signalement,r.commune,r.code_insee||"",r.rue,libType(r.type),
+    r.id,r.date_signalement,r.commune,r.code_insee||"",r.rue,
+    r.type||"",libType(r.type),r.sous_type||"",libSousType(r.type,r.sous_type),
     STATUTS[r.statut].l,r.auteur,r.commentaire,r.lat,r.lon,
     dateStatut(r,"encours"), dateStatut(r,"regle"), r._maj||""
   ].map(q).join(";"));
