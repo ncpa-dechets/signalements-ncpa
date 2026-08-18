@@ -734,6 +734,17 @@ header h1{font-size:19px;margin:2px 0 0;font-weight:700}
 }
 #form.open{display:block}
 
+/* En-tête de fiche : reste collé en haut du volet qui défile, pour que la
+   croix de fermeture soit toujours à portée de clic. top:-12px compense le
+   padding:12px de #form. */
+.form-head{display:flex;align-items:center;gap:8px;position:sticky;top:-12px;z-index:3;
+           background:#fff;margin:0 -12px 6px;padding:0 12px 4px;
+           border-bottom:1px solid var(--bord)}
+.form-head h2{flex:1;min-width:0;margin:0;border-bottom:0;padding-bottom:0}
+#btnFormClose{flex:0 0 auto;padding:2px 8px;font-size:14px;line-height:1;
+              background:transparent;border-color:transparent;color:var(--gris)}
+#btnFormClose:hover{background:transparent;color:var(--rouge)}
+
 h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--gris);
    margin:16px 0 6px;border-bottom:1px solid var(--bord);padding-bottom:4px}
 h2:first-child{margin-top:0}
@@ -801,6 +812,19 @@ td.cmt{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap
 .sv-head a:hover{color:var(--rouge)}
 .sv-head button{padding:1px 7px;font-size:12px}
 #svPanelFrame{width:100%;height:270px;border:0;display:block}
+
+/* Contrôle de fond de carte (L.control.layers). Deux correctifs indispensables :
+   - l'icône Leaflet pointe vers images/layers.png, absent de cette page unique :
+     on la remplace par un SVG en data-URI ;
+   - les règles input/label de la page écraseraient les boutons radio du contrôle. */
+.leaflet-control-layers-toggle,
+.leaflet-retina .leaflet-control-layers-toggle{
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234a4a4a' stroke-width='2' stroke-linejoin='round'%3E%3Cpath d='M12 2 2 7l10 5 10-5-10-5z'/%3E%3Cpath d='M2 17l10 5 10-5'/%3E%3Cpath d='M2 12l10 5 10-5'/%3E%3C/svg%3E");
+  background-size:22px 22px;width:34px;height:34px}
+.leaflet-control-layers-expanded{font-family:inherit;min-width:150px}
+.leaflet-control-layers input{width:auto;padding:0;margin:0 6px 0 0;border:0}
+.leaflet-control-layers label{display:flex;align-items:center;margin:3px 0;font-size:13px;
+  font-weight:400;color:#222;text-transform:none;letter-spacing:0;cursor:pointer}
 .toolbar .hint{margin:0}
 .meta{font-size:11.5px;color:var(--gris);line-height:1.5}
 .hint{font-size:11.5px;color:var(--gris);line-height:1.45;margin:6px 0 0}
@@ -851,12 +875,6 @@ body.lecture .ro-note{display:block}
   <aside id="panel">
     <button id="btnAdd" class="mode-btn ecriture">＋ Nouveau signalement</button>
     <p class="hint" id="addHint" style="display:none">Cliquez sur la carte à l'endroit du problème.</p>
-
-    <h2>Fond de carte</h2>
-    <select id="selFond">
-      <option value="plan">Plan (CartoDB Light)</option>
-      <option value="satellite">Satellite (orthophoto IGN)</option>
-    </select>
 
     <h2>Filtres</h2>
     <label>Statut</label>
@@ -941,7 +959,10 @@ body.lecture .ro-note{display:block}
 
   <!-- ============ PANNEAU DROIT : FICHE ============ -->
   <aside id="form">
-    <h2 id="formTitre">Fiche signalement</h2>
+    <div class="form-head">
+      <h2 id="formTitre">Fiche signalement</h2>
+      <button id="btnFormClose" title="Fermer la fiche (Échap)">✕</button>
+    </div>
 
     <label>Type de problème</label>
     <select id="fmType"></select>
@@ -1139,10 +1160,13 @@ const fondSat = L.tileLayer(
 fondPlan.addTo(map);
 L.control.scale({imperial:false}).addTo(map);
 
-document.getElementById("selFond").onchange = e=>{
-  map.removeLayer(fondPlan); map.removeLayer(fondSat);
-  (e.target.value==="satellite"?fondSat:fondPlan).addTo(map);
-};
+// Choix du fond directement sur la carte (haut-droit) : le zoom occupe le haut
+// à gauche, l'échelle le bas à gauche, le panneau Street View le bas à droite.
+L.control.layers(
+  {"Plan": fondPlan, "Satellite (orthophoto IGN)": fondSat},
+  null,
+  {position:"topright", collapsed:true}
+).addTo(map);
 setTimeout(()=>map.invalidateSize(),120);
 window.addEventListener("resize",()=>map.invalidateSize());
 
@@ -1512,9 +1536,19 @@ const fmv = n => document.getElementById("fm"+n).value;
 function ouvrirPanneau(){ document.getElementById("form").classList.add("open"); setTimeout(()=>map.invalidateSize(),80); }
 function fermerPanneau(){
   document.getElementById("form").classList.remove("open");
+  document.getElementById("btnMove").textContent = "Repositionner le point";
   SELECTION=null; BROUILLON=null; dessiner(); setTimeout(()=>map.invalidateSize(),80);
 }
 document.getElementById("btnClose").onclick = fermerPanneau;
+document.getElementById("btnFormClose").onclick = fermerPanneau;
+
+// Échap ferme la fiche. Garde-fou : la barre de recherche gère déjà Échap pour
+// replier ses suggestions et ne stoppe pas la propagation.
+document.addEventListener("keydown", e=>{
+  if(e.key !== "Escape") return;
+  if(document.getElementById("qAdrList").classList.contains("open")) return;
+  if(document.getElementById("form").classList.contains("open")) fermerPanneau();
+});
 
 document.getElementById("btnSave").onclick = async ()=>{
   const base = BROUILLON || DATA.find(x=>x.id===SELECTION);
@@ -1535,9 +1569,15 @@ document.getElementById("btnSave").onclick = async ()=>{
       auteur: (localStorage.getItem(LS_AUTEUR)||rec.auteur||"").trim()
     });
   }
+  const nouveau = !(base.historique && base.historique.length);
   DATA = await Store.enregistrer(rec);
-  BROUILLON = null; SELECTION = rec.id;
-  dessiner(); ouvrirFiche(rec.id);
+  BROUILLON = null; SELECTION = null;
+  fermerPanneau();                       // retour immédiat à la carte
+  // Store.enregistrer a déjà posé un badge : on n'écrase pas un échec d'écriture.
+  if(document.getElementById("syncBadge").className !== "err"){
+    badge("ok", (nouveau ? "Signalement enregistré" : "Signalement mis à jour")
+                + " — " + (rec.rue || rec.commune || "point ajouté"));
+  }
 };
 
 document.getElementById("btnDelete").onclick = async ()=>{
