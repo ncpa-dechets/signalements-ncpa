@@ -843,6 +843,24 @@ body.lecture .ecriture{display:none!important}
          font-size:12px;color:#7a5a10;margin-top:8px;display:none}
 body.lecture .ro-note{display:block}
 
+/* ---- photos ---- */
+.photos{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.photo-case{position:relative;width:78px;height:78px}
+.photo-vig{width:78px;height:78px;object-fit:cover;border-radius:4px;
+           border:1px solid var(--bord);background:#eceae6;cursor:pointer;display:block}
+.photo-case.attente .photo-vig{opacity:.45}
+.photo-del{position:absolute;top:-6px;right:-6px;width:22px;height:22px;min-height:0;
+           padding:0;border-radius:50%;background:#fff;border:1px solid var(--bord);
+           color:var(--rouge);font-size:12px;line-height:1;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+body.lecture .photo-del{display:none}
+body.tactile .photo-case,body.tactile .photo-vig{width:92px;height:92px}
+body.tactile .photo-del{width:28px;height:28px;font-size:14px}
+
+#lightbox{position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:2000;
+          display:none;align-items:center;justify-content:center;cursor:zoom-out}
+#lightbox.on{display:flex}
+#lightbox img{max-width:96vw;max-height:92vh;object-fit:contain}
+
 /* =========================================================================
    MODE TACTILE (tablette de terrain)
    Piloté par la classe body.tactile, pas par une media query seule : l'agent
@@ -1061,6 +1079,12 @@ body.tactile .form-head{top:-14px;margin:0 -14px 8px;padding:0 14px 6px}
     <label>Commentaire</label>
     <textarea id="fmCommentaire" placeholder="Description de la situation, fréquence, contexte…"></textarea>
 
+    <label>Photos (3 maximum)</label>
+    <div class="photos" id="fmPhotos"></div>
+    <button class="btn-full ecriture" id="btnPhoto">📷 Prendre une photo</button>
+    <input type="file" id="filePhoto" accept="image/*" capture="environment" style="display:none">
+    <p class="hint" id="photoHint"></p>
+
     <label>Coordonnées GPS (WGS84)</label>
     <input type="text" id="fmCoord" readonly>
     <button class="btn-full ecriture" id="btnMove">Repositionner le point</button>
@@ -1081,6 +1105,8 @@ body.tactile .form-head{top:-14px;margin:0 -14px 8px;padding:0 14px 6px}
     <p class="meta" id="fmMeta"></p>
   </aside>
 </div>
+
+<div id="lightbox"><img id="lightboxImg" alt="Photo du signalement"></div>
 
 <script>
 /* @preserve
@@ -1157,6 +1183,27 @@ const LS_AUTEUR = "ncpa_signalement_auteur";
    COUCHE DE STOCKAGE
    Une seule brique à changer pour basculer local → partagé.
    ========================================================================= */
+/* Appel générique au script Google : POST en text/plain (évite le préflight CORS
+   d'Apps Script), repli en GET si le POST est bloqué par le réseau de la
+   collectivité. Renvoie la réponse décodée, ou lève une erreur.
+   repli=false pour les envois volumineux (photos) : une URL de 350 Ko ne passe pas. */
+async function appelScript(charge, repli){
+  const corps = JSON.stringify(Object.assign({key:cle()}, charge));
+  const lire = async r=>{
+    if(!r.ok) throw new Error(r.status);
+    const j = await r.json();
+    if(j && j.erreur) throw new Error(j.erreur);
+    return j;
+  };
+  try{
+    return await lire(await fetch(CONFIG.SYNC_URL,{method:"POST",
+      headers:{"Content-Type":"text/plain;charset=utf-8"}, body:corps}));
+  }catch(e){
+    if(repli === false) throw e;
+    return await lire(await fetch(CONFIG.SYNC_URL + "?payload=" + encodeURIComponent(corps)));
+  }
+}
+
 const Store = {
   distant(){ return !!CONFIG.SYNC_URL; },
 
@@ -1181,26 +1228,8 @@ const Store = {
     }
   },
 
-  // Envoi au serveur : POST en text/plain (évite le préflight CORS d'Apps Script),
-  // repli en GET si le POST est bloqué par le réseau de la collectivité.
-  async envoyer(charge){
-    const corps = JSON.stringify(Object.assign({key:cle()}, charge));
-    try{
-      const r = await fetch(CONFIG.SYNC_URL,{method:"POST",
-        headers:{"Content-Type":"text/plain;charset=utf-8"}, body:corps});
-      if(!r.ok) throw new Error(r.status);
-      const j = await r.json();
-      if(j && j.erreur) throw new Error(j.erreur);
-      return true;
-    }catch(e){
-      try{
-        const r2 = await fetch(CONFIG.SYNC_URL + "?payload=" + encodeURIComponent(corps));
-        const j2 = await r2.json();
-        if(j2 && j2.erreur) throw new Error(j2.erreur);
-        return true;
-      }catch(e2){ throw e2; }
-    }
-  },
+  async envoyer(charge){ await appelScript(charge, true); return true; },
+  appeler(charge, repli){ return appelScript(charge, repli); },
 
   async enregistrer(rec){
     const list = this.lireLocal();
@@ -1671,6 +1700,8 @@ function peupler(r){
   fm("Date", r.date_signalement || new Date().toISOString().slice(0,10));
   fm("Commentaire", r.commentaire||"");
   fm("Coord", r.lat+", "+r.lon);
+  FICHE_PHOTOS = Array.isArray(r.photos) ? r.photos.slice() : [];
+  majPhotos();
   document.getElementById("svWrap").style.display="none";
   document.getElementById("svFrame").src="";
 }
@@ -1714,14 +1745,18 @@ document.addEventListener("keydown", e=>{
   if(document.getElementById("form").classList.contains("open")) fermerPanneau();
 });
 
-document.getElementById("btnSave").onclick = async ()=>{
+/* fermer=true : enregistrement demandé par l'agent, on revient à la carte.
+   fermer=false : enregistrement automatique après ajout ou retrait d'une photo,
+   la fiche reste ouverte. */
+async function enregistrerFiche(fermer){
   const base = BROUILLON || DATA.find(x=>x.id===SELECTION);
   if(!base) return;
   const rec = Object.assign({}, base, {
     type: fmv("Type"), sous_type: fmv("SousType"), statut: fmv("Statut"),
     commune: fmv("Commune").trim(), rue: fmv("Rue").trim(),
     auteur: fmv("Auteur").trim(), date_signalement: fmv("Date"),
-    commentaire: fmv("Commentaire").trim()
+    commentaire: fmv("Commentaire").trim(),
+    photos: FICHE_PHOTOS.slice()
   });
   // historique : première entrée à la création, puis à chaque changement de statut
   rec.historique = (base.historique||[]).slice();
@@ -1735,14 +1770,20 @@ document.getElementById("btnSave").onclick = async ()=>{
   }
   const nouveau = !(base.historique && base.historique.length);
   DATA = await Store.enregistrer(rec);
+
+  if(!fermer){                              // la fiche reste ouverte
+    BROUILLON = null; SELECTION = rec.id; dessiner();
+    return;
+  }
   BROUILLON = null; SELECTION = null;
-  fermerPanneau();                       // retour immédiat à la carte
+  fermerPanneau();                          // retour immédiat à la carte
   // Store.enregistrer a déjà posé un badge : on n'écrase pas un échec d'écriture.
   if(document.getElementById("syncBadge").className !== "err"){
     badge("ok", (nouveau ? "Signalement enregistré" : "Signalement mis à jour")
                 + " — " + (rec.rue || rec.commune || "point ajouté"));
   }
-};
+}
+document.getElementById("btnSave").onclick = ()=>enregistrerFiche(true);
 
 document.getElementById("btnDelete").onclick = async ()=>{
   if(!SELECTION) return;
@@ -1764,6 +1805,137 @@ document.getElementById("btnSv").onclick = ()=>{
   document.getElementById("svFrame").src =
     `https://maps.google.com/maps?q=&layer=c&cbll=${c[0].trim()},${c[1].trim()}&cbp=11,0,0,0,0&output=svembed`;
   w.style.display="block";
+};
+
+/* =========================================================================
+   PHOTOS
+   Chaîne complète : appareil photo → compression dans le navigateur → envoi au
+   script → dépôt dans un dossier Drive privé. Seul l'identifiant du fichier est
+   stocké dans le classeur ; jamais l'image, qui n'y tiendrait pas (50 000
+   caractères par cellule) et alourdirait chaque synchronisation.
+   ========================================================================= */
+const PHOTO_MAX_PX = 1600;     // côté le plus long après redimensionnement
+const PHOTO_QUALITE = 0.7;     // qualité JPEG : ~250 Ko par photo
+const PHOTO_NB_MAX = 3;
+
+let FICHE_PHOTOS = [];                 // photos de la fiche ouverte
+const PHOTO_CACHE = new Map();         // fileId → data-URI, évite de retélécharger
+
+const ficheId = () => SELECTION || (BROUILLON && BROUILLON.id) || "";
+
+/* Redimensionne et réencode en JPEG.
+   createImageBitmap avec imageOrientation redresse les photos prises en portrait :
+   le passage par un canvas efface les métadonnées EXIF, dont l'orientation, et
+   sans cette précaution toutes les photos verticales sortiraient couchées. */
+async function compresserPhoto(fichier){
+  let src;
+  try{ src = await createImageBitmap(fichier, {imageOrientation:"from-image"}); }
+  catch(e){                                   // repli : navigateur sans createImageBitmap
+    src = await new Promise((res,rej)=>{
+      const img = new Image();
+      img.onload = ()=>res(img); img.onerror = rej;
+      img.src = URL.createObjectURL(fichier);
+    });
+  }
+  const ech = Math.min(1, PHOTO_MAX_PX / Math.max(src.width, src.height));
+  const w = Math.round(src.width * ech), h = Math.round(src.height * ech);
+  const cv = document.createElement("canvas");
+  cv.width = w; cv.height = h;
+  cv.getContext("2d").drawImage(src, 0, 0, w, h);
+  if(src.close) src.close();
+  return new Promise(res=>cv.toBlob(res, "image/jpeg", PHOTO_QUALITE));
+}
+
+const enBase64 = blob => new Promise((res,rej)=>{
+  const fr = new FileReader();
+  fr.onload = ()=>res(String(fr.result).split(",")[1]);
+  fr.onerror = rej;
+  fr.readAsDataURL(blob);
+});
+
+/* Récupère une photo via le script (les fichiers Drive restent privés).
+   'vignette' demande la miniature générée par Drive : ~10 Ko au lieu de 250. */
+async function chargerPhoto(id, taille){
+  const clef = id + "|" + (taille||"pleine");
+  if(PHOTO_CACHE.has(clef)) return PHOTO_CACHE.get(clef);
+  const j = await Store.appeler({action:"getphoto", id, taille});
+  const uri = "data:" + (j.mime||"image/jpeg") + ";base64," + j.data;
+  PHOTO_CACHE.set(clef, uri);
+  return uri;
+}
+
+function majPhotos(){
+  const zone = document.getElementById("fmPhotos");
+  const hint = document.getElementById("photoHint");
+  const btn  = document.getElementById("btnPhoto");
+
+  zone.innerHTML = FICHE_PHOTOS.map((p,i)=>
+    `<div class="photo-case attente" data-i="${i}">
+       <img class="photo-vig" alt="Photo ${i+1}">
+       <button class="photo-del" title="Retirer cette photo">✕</button>
+     </div>`).join("");
+
+  FICHE_PHOTOS.forEach((p,i)=>{
+    const caseP = zone.querySelector(`.photo-case[data-i="${i}"]`);
+    const img = caseP.querySelector("img");
+    chargerPhoto(p.id, "vignette")
+      .then(uri=>{ img.src = uri; caseP.classList.remove("attente"); })
+      .catch(()=>{ caseP.classList.remove("attente"); img.alt = "Photo indisponible"; });
+    img.onclick = async ()=>{
+      const lb = document.getElementById("lightbox");
+      document.getElementById("lightboxImg").src = img.src;   // vignette d'abord
+      lb.classList.add("on");
+      try{ document.getElementById("lightboxImg").src = await chargerPhoto(p.id); }catch(e){}
+    };
+    caseP.querySelector(".photo-del").onclick = async ()=>{
+      if(!confirm("Retirer cette photo du signalement ?")) return;
+      FICHE_PHOTOS.splice(i,1);
+      majPhotos();
+      try{ await Store.appeler({action:"delphoto", id:p.id}); }catch(e){}
+      if(SELECTION) enregistrerFiche();     // la suppression est immédiate côté base
+    };
+  });
+
+  const reste = PHOTO_NB_MAX - FICHE_PHOTOS.length;
+  btn.style.display = reste > 0 ? "" : "none";
+  hint.textContent = FICHE_PHOTOS.length
+    ? FICHE_PHOTOS.length + " photo(s) — " + (reste>0 ? reste + " encore possible(s)" : "maximum atteint")
+    : "";
+}
+
+document.getElementById("lightbox").onclick = e=>{
+  e.currentTarget.classList.remove("on");
+  document.getElementById("lightboxImg").src = "";
+};
+
+document.getElementById("btnPhoto").onclick = ()=>document.getElementById("filePhoto").click();
+
+document.getElementById("filePhoto").onchange = async e=>{
+  const f = e.target.files[0];
+  e.target.value = "";                       // permet de reprendre deux fois la même scène
+  if(!f) return;
+  if(!Store.distant()){ alert("Les photos nécessitent la connexion au classeur partagé."); return; }
+  if(FICHE_PHOTOS.length >= PHOTO_NB_MAX) return;
+
+  const btn = document.getElementById("btnPhoto");
+  btn.disabled = true; btn.textContent = "Compression…";
+  try{
+    const blob = await compresserPhoto(f);
+    btn.textContent = "Envoi… (" + Math.round(blob.size/1024) + " Ko)";
+    const data = await enBase64(blob);
+    // repli GET désactivé : une photo ne passe pas dans une URL
+    const j = await Store.appeler({action:"photo", sig:ficheId(), data, mime:"image/jpeg"}, false);
+    FICHE_PHOTOS.push({id:j.fileId, nom:j.nom, date:new Date().toISOString()});
+    majPhotos();
+    if(SELECTION) enregistrerFiche();        // fiche existante : on rattache tout de suite
+    badge("ok","Photo enregistrée");
+  }catch(err){
+    badge("err","Photo non envoyée — " + (err.message||"réessayez"));
+    alert("La photo n'a pas pu être envoyée.\n\n" + (err.message||"") +
+          "\n\nVérifiez la connexion, puis reprenez la photo.");
+  }finally{
+    btn.disabled = false; btn.textContent = "📷 Prendre une photo";
+  }
 };
 
 /* =========================================================================
@@ -1981,6 +2153,11 @@ function telecharger(nom, contenu, type){
 }
 const stamp = ()=> new Date().toISOString().slice(0,10);
 
+// Liens Drive des photos, séparés par un espace. Ces liens ne fonctionnent que
+// pour les comptes ayant accès au dossier : les fichiers ne sont pas publics.
+const lienspPhotos = r => (r.photos||[])
+  .map(p=>"https://drive.google.com/file/d/"+p.id+"/view").join(" ");
+
 document.getElementById("btnGeojson").onclick = ()=>{
   const fc = {type:"FeatureCollection", features: filtrer().map(r=>({
     type:"Feature",
@@ -1992,6 +2169,8 @@ document.getElementById("btnGeojson").onclick = ()=>{
       commune:r.commune, code_insee:r.code_insee||"", rue:r.rue,
       auteur:r.auteur, date_signalement:r.date_signalement,
       commentaire:r.commentaire, date_maj:r._maj||"",
+      nb_photos:(r.photos||[]).length,
+      photos_liens: lienspPhotos(r),
       historique: JSON.stringify(r.historique||[])
     }
   }))};
@@ -2001,7 +2180,8 @@ document.getElementById("btnGeojson").onclick = ()=>{
 document.getElementById("btnCsv").onclick = ()=>{
   const cols = ["id","date_signalement","commune","code_insee","rue",
                 "type","type_libelle","sous_type","sous_type_libelle","statut_libelle",
-                "auteur","commentaire","lat","lon","date_prise_en_charge","date_reglement","date_maj"];
+                "auteur","commentaire","lat","lon","nb_photos","photos_liens",
+                "date_prise_en_charge","date_reglement","date_maj"];
   const q = v => '"'+String(v==null?"":v).replace(/"/g,'""')+'"';
   const dateStatut = (r,s)=>{
     const e = (r.historique||[]).filter(x=>x.statut===s).pop();
@@ -2011,6 +2191,7 @@ document.getElementById("btnCsv").onclick = ()=>{
     r.id,r.date_signalement,r.commune,r.code_insee||"",r.rue,
     r.type||"",libType(r.type),r.sous_type||"",libSousType(r.type,r.sous_type),
     STATUTS[r.statut].l,r.auteur,r.commentaire,r.lat,r.lon,
+    (r.photos||[]).length, lienspPhotos(r),
     dateStatut(r,"encours"), dateStatut(r,"regle"), r._maj||""
   ].map(q).join(";"));
   telecharger(`NCPA_signalements_${stamp()}.csv`, "\uFEFF"+cols.join(";")+"\n"+lignes.join("\n"), "text/csv");
