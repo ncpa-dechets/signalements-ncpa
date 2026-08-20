@@ -896,6 +896,9 @@ body.tactile header{padding:6px 10px;gap:8px}
 body.tactile header h1{font-size:16px}
 body.tactile .eyebrow{display:none}
 body.tactile #btnFiltres{display:inline-block}
+/* Terrain : le tableau de données n'a pas d'usage sur le terrain et mangeait
+   jusqu'à 60 % de la hauteur d'écran. Masqué en tactile, intact sur poste fixe. */
+body.tactile #btnTable{display:none}
 
 /* Cibles d'au moins 44 px. Champs à 16 px : en dessous, le navigateur mobile
    zoome automatiquement à chaque mise au point sur un champ de saisie. */
@@ -962,6 +965,7 @@ body.tactile #zoneAvance .periode input{flex:1 1 0;min-width:0;width:100%}
   <div class="hdr-right">
     <button id="btnFiltres" title="Ouvrir les filtres et les exports">☰ Filtres</button>
     <span id="syncBadge">Mode local</span>
+    <button id="btnLoc" title="Centrer la carte sur ma position GPS">◎ Se localiser</button>
     <button id="btnSvMode" title="Ouvrir Street View sur un point de la carte">Street View</button>
     <button id="btnTable">Tableau</button>
     <button id="btnTactile" title="Basculer en affichage tactile (terrain)">🖐</button>
@@ -2075,6 +2079,25 @@ btnIci.onclick = async ()=>{
   }
 };
 
+/* Recentrage simple sur la position, sans créer de signalement : utilisable aussi
+   en mode consultation, là où « Signaler ici » est masqué. Zoom 17 plutôt que 18 :
+   on cherche à se repérer, pas à pointer. La pastille de synchronisation n'est
+   touchée qu'en cas d'erreur : le cercle bleu annonce déjà la précision. */
+const btnLoc = document.getElementById("btnLoc");
+btnLoc.onclick = async ()=>{
+  const lib = btnLoc.textContent;
+  btnLoc.disabled = true; btnLoc.textContent = "Localisation…";
+  try{
+    const p = await position();
+    afficherPosition(p.coords);
+    map.setView([p.coords.latitude,p.coords.longitude], Math.max(map.getZoom(),17));
+  }catch(e){
+    badge("err", messageGeo(e));
+  }finally{
+    btnLoc.disabled = false; btnLoc.textContent = lib;
+  }
+};
+
 /* Appel unique à la BAN inverse : renvoie les propriétés de l'adresse la plus proche,
    ou null. Partagé entre le pré-remplissage de la fiche et le titre du panneau Street View. */
 async function banReverse(lat,lon){
@@ -2163,7 +2186,10 @@ btnAvance.onclick = ()=>{
 function appliquerTactile(on){
   document.body.classList.toggle("tactile", on);
   document.getElementById("btnTactile").classList.toggle("active", on);
-  if(on){ zoneAvance.prepend(blocPeriode); }
+  // le bouton Tableau disparaît en tactile : un panneau laissé ouvert sur poste
+  // fixe resterait affiché sans moyen de le refermer.
+  if(on){ document.getElementById("tablewrap").classList.remove("open");
+          zoneAvance.prepend(blocPeriode); }
   else  { document.getElementById("ancrePeriode").after(blocPeriode); replierAvance(); }
   if(!on) fermerTiroir();
   setTimeout(()=>map.invalidateSize(),150);
