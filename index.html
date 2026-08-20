@@ -920,6 +920,20 @@ body.tactile #form{position:fixed;left:0;right:0;bottom:0;top:auto;z-index:1500;
   padding:14px 14px calc(14px + env(safe-area-inset-bottom))}
 body.tactile .form-head{top:-14px;margin:0 -14px 8px;padding:0 14px 6px}
 
+/* Tiroir de terrain : l'essentiel d'abord. La période et les exports ne servent
+   pas au signalement sur le terrain, ils passent sous un bouton dépliant.
+   Rien n'est supprimé : sur poste fixe (#btnAvance masqué) tout reste affiché. */
+#btnAvance{display:none}
+body.tactile #btnAvance{display:block;text-align:left;font-weight:600}
+body.tactile #zoneAvance{display:none}
+body.tactile.avance #zoneAvance{display:block;
+  border-left:2px solid var(--bord);padding-left:8px;margin-top:6px}
+body.tactile.avance #btnAvance{background:var(--fond);border-color:var(--gris)}
+body.tactile #zoneAvance #blocPeriode{margin-bottom:10px}
+/* le retrait du bloc réduit la largeur utile : les deux dates doivent rester
+   dans le tiroir plutôt que déborder sous la carte */
+body.tactile #zoneAvance .periode input{flex:1 1 0;min-width:0;width:100%}
+
 @media(max-width:860px){
   .searchbox{flex:1 1 100%;max-width:none;order:3}
   #svPanel{left:10px;right:10px;width:auto}
@@ -973,12 +987,15 @@ body.tactile .form-head{top:-14px;margin:0 -14px 8px;padding:0 14px 6px}
     <label>Commune</label>
     <select id="fCommune"><option value="">Toutes</option></select>
 
-    <label>Période (date de signalement)</label>
-    <div class="periode">
-      <input type="date" id="fDu" title="À partir du">
-      <input type="date" id="fAu" title="Jusqu'au">
+    <span id="ancrePeriode" hidden></span>
+    <div id="blocPeriode">
+      <label>Période (date de signalement)</label>
+      <div class="periode">
+        <input type="date" id="fDu" title="À partir du">
+        <input type="date" id="fAu" title="Jusqu'au">
+      </div>
+      <button class="btn-full" id="btnPeriodeRaz" style="padding:4px">Effacer la période</button>
     </div>
-    <button class="btn-full" id="btnPeriodeRaz" style="padding:4px">Effacer la période</button>
 
     <label>Filtrer les signalements (rue, commentaire, auteur, type)</label>
     <input type="text" id="fTexte" placeholder="…">
@@ -993,12 +1010,17 @@ body.tactile .form-head{top:-14px;margin:0 -14px 8px;padding:0 14px 6px}
 
     <h2>Données</h2>
     <button class="btn-full" id="btnSync">↻ Synchroniser</button>
-    <button class="btn-full" id="btnGeojson">Export GeoJSON (QGIS)</button>
-    <button class="btn-full" id="btnCsv">Export CSV (Excel)</button>
-    <button class="btn-full" id="btnJson">Sauvegarde JSON</button>
-    <button class="btn-full" id="btnImport">Importer une sauvegarde JSON</button>
-    <input type="file" id="fileJson" accept=".json,.geojson" style="display:none">
-    <p class="hint" id="storageInfo"></p>
+    <!-- Bouton visible en mode tactile seulement : sur le terrain, période et exports
+         encombrent inutilement le tiroir. Sur poste fixe, tout reste affiché. -->
+    <button class="btn-full" id="btnAvance" aria-expanded="false">▾ Options avancées (période, exports)</button>
+    <div id="zoneAvance">
+      <button class="btn-full" id="btnGeojson">Export GeoJSON (QGIS)</button>
+      <button class="btn-full" id="btnCsv">Export CSV (Excel)</button>
+      <button class="btn-full" id="btnJson">Sauvegarde JSON</button>
+      <button class="btn-full" id="btnImport">Importer une sauvegarde JSON</button>
+      <input type="file" id="fileJson" accept=".json,.geojson" style="display:none">
+      <p class="hint" id="storageInfo"></p>
+    </div>
 
     <h2>Signalé par</h2>
     <input type="text" id="auteurDefaut" placeholder="Votre nom (pré-rempli)">
@@ -1137,40 +1159,53 @@ const cle    = () => localStorage.getItem(LS_CLE) || "";
    (facultative). v = code stocké, e = emoji d'affichage, l = libellé exporté.
    L'emoji n'est JAMAIS concaténé au libellé : il ne sert qu'aux menus. */
 const CATEGORIES = [
-  {v:"collecte", e:"🚛", l:"Problèmes de collecte", sous:[
-    {v:"collecte_oubli", l:"Collecte non effectuée (oubli)"},
-    {v:"collecte_refus", l:"Collecte non effectuée (refus)"},
-    {v:"stationnement",  l:"Stationnement gênant la circulation de la benne"}
+  {v:"collecte", e:"🚛", l:"Problème de collecte", sous:[
+    {v:"collecte_oubli",  l:"Collecte non effectuée (oubli)"},
+    {v:"collecte_refus",  l:"Collecte non effectuée (refus)"},
+    {v:"stationnement",   l:"Stationnement gênant"},
+    {v:"bacs_eloignes",   l:"Bacs trop éloignés, zone de présentation"}
   ]},
-  {v:"bacs", e:"🗑️", l:"Bacs et conteneurs", sous:[
-    {v:"debordement",          l:"Débordement de bacs collectifs"},
-    {v:"bac_manquant",         l:"Bac manquant / volé"},
-    {v:"bac_mal_positionne",   l:"Bac mal positionné / déplacé"},
-    {v:"couvercle",            l:"Couvercle / fermeture défectueuse"},
-    {v:"bac_non_conforme",     l:"Bac non conforme / taille inadaptée"},
-    {v:"equipement_endommage", l:"Équipement de collecte endommagé"}
+  {v:"colonnes", e:"♻️", l:"Colonnes et autres équipements", sous:[
+    {v:"colonne_debordante", l:"Colonne débordante"},
+    {v:"colonne",            l:"Colonne en mauvais état"},
+    {v:"colonne_abords",     l:"Abords de la colonne à nettoyer"}
   ]},
-  {v:"points", e:"🏗️", l:"Points de regroupement et aménagements", sous:[
+  {v:"pdr", e:"🏗️", l:"PDR / bacs collectifs", sous:[
+    {v:"debordement",   l:"Débordement des bacs"},
     {v:"claustra",      l:"Claustra en mauvais état"},
-    {v:"colonne",       l:"Colonne en mauvais état"},
-    {v:"vegetation",    l:"Végétation envahissante autour du point de collecte"},
-    {v:"acces_bloque",  l:"Accès au point de collecte bloqué / difficile / sale"}
+    {v:"bacs_etat",     l:"Bacs en mauvais état"},
+    {v:"vegetation",    l:"Végétation envahissante"},
+    {v:"acces_bloque",  l:"Accès au point de collecte compliqué / bloqué"},
+    {v:"pdr_nettoyage", l:"PDR à nettoyer"}
   ]},
   {v:"comportements", e:"🚯", l:"Comportements et dépôts", sous:[
-    {v:"depot_sauvage",     l:"Dépôt sauvage / encombrants à proximité"},
-    {v:"dechets_dangereux", l:"Déchets dangereux / toxiques jetés dans les bacs"},
-    {v:"tri_non_respecte",  l:"Consignes de tri non respectées"}
-  ]},
-  {v:"hygiene", e:"🐀", l:"Hygiène et nuisances", sous:[
-    {v:"odeurs",          l:"Odeurs nauséabondes persistantes"},
-    {v:"nuisibles",       l:"Présence de nuisibles"},
-    {v:"eaux_stagnantes", l:"Eaux stagnantes / infiltration"}
-  ]},
-  {v:"incidents", e:"🔥", l:"Incidents graves", sous:[
-    {v:"feu",        l:"Feu / incendie dans la benne ou à proximité"},
-    {v:"vandalisme", l:"Acte de vandalisme / malveillance"}
+    {v:"depot_sauvage",       l:"Dépôt sauvage / encombrants à proximité"},
+    {v:"dechets_dangereux",   l:"Déchets dangereux / toxiques jetés dans les bacs"},
+    {v:"vandalisme_incendie", l:"Vandalisme / incendie"}
   ]}
 ];
+
+/* Codes des référentiels précédents. Les anciens signalements ne sont PAS reclassés :
+   ils conservent leur code d'origine, ce tableau sert uniquement à en afficher un
+   libellé lisible (tableau, fiche, exports) au lieu du code brut. */
+const ANCIENS_LIBELLES = {
+  bacs:"Bacs et conteneurs (ancien)",
+  points:"Points de regroupement et aménagements (ancien)",
+  hygiene:"Hygiène et nuisances (ancien)",
+  incidents:"Incidents graves (ancien)",
+  bac_manquant:"Bac manquant / volé (ancien)",
+  bac_mal_positionne:"Bac mal positionné / déplacé (ancien)",
+  couvercle:"Couvercle / fermeture défectueuse (ancien)",
+  bac_non_conforme:"Bac non conforme / taille inadaptée (ancien)",
+  equipement_endommage:"Équipement de collecte endommagé (ancien)",
+  tri_non_respecte:"Consignes de tri non respectées (ancien)",
+  odeurs:"Odeurs nauséabondes persistantes (ancien)",
+  nuisibles:"Présence de nuisibles (ancien)",
+  eaux_stagnantes:"Eaux stagnantes / infiltration (ancien)",
+  feu:"Feu / incendie (ancien)",
+  vandalisme:"Acte de vandalisme / malveillance (ancien)"
+};
+const libAncien = v => ANCIENS_LIBELLES[v] || v || "";
 const STATUTS = {
   signale:{l:"Signalé",              c:"#B91E27"},
   encours:{l:"En cours de traitement",c:"#D97706"},
@@ -1657,13 +1692,17 @@ document.querySelectorAll("#tbl th").forEach(th=>{
 });
 
 const esc = s => (s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-// Code inconnu (ancien enregistrement) : on affiche le code brut plutôt que du vide.
-const libType = v => (categorie(v)||{l:v||""}).l;
+// Code hors référentiel actuel (ancien enregistrement) : on affiche son libellé
+// d'origine s'il est connu, le code brut sinon — jamais du vide, et sans le reclasser.
+const libType = v => (categorie(v)||{l:libAncien(v)}).l;
 const libSousType = (cat,v)=>{
   if(!v) return "";
   const c = categorie(cat);
-  const s = c && c.sous.find(x=>x.v===v);
-  return s ? s.l : v;
+  let s = c && c.sous.find(x=>x.v===v);
+  // Précision saisie sous une ancienne catégorie : le libellé reste juste, seul
+  // le rattachement a changé — on le retrouve donc dans l'ensemble du référentiel.
+  if(!s) for(const k of CATEGORIES){ s = k.sous.find(x=>x.v===v); if(s) break; }
+  return s ? s.l : libAncien(v);
 };
 // Le tri des deux colonnes de type porte sur le libellé affiché, pas sur le code.
 const valeurTri = (r,k)=>
@@ -1711,12 +1750,12 @@ function peuplerType(cat, sous){
   const sc = document.getElementById("fmType"), ss = document.getElementById("fmSousType");
   sc.innerHTML = optionsCat();
   if(cat && !categorie(cat)) sc.insertAdjacentHTML("beforeend",
-    `<option value="${esc(cat)}">${esc(cat)}</option>`);
+    `<option value="${esc(cat)}">${esc(libType(cat))}</option>`);
   sc.value = cat || CATEGORIES[0].v;
   ss.innerHTML = optionsSous(sc.value, "— non précisé —");
   const c = categorie(sc.value);
   if(sous && !(c && c.sous.some(x=>x.v===sous))) ss.insertAdjacentHTML("beforeend",
-    `<option value="${esc(sous)}">${esc(sous)}</option>`);
+    `<option value="${esc(sous)}">${esc(libSousType(cat,sous))}</option>`);
   ss.value = sous || "";
 }
 const fm = (n,v)=>{ document.getElementById("fm"+n).value = v; };
@@ -2097,9 +2136,30 @@ document.getElementById("btnFiltres").onclick = ()=>
   document.getElementById("panel").classList.contains("ouvert") ? fermerTiroir() : ouvrirTiroir();
 voile.onclick = fermerTiroir;
 
+/* Terrain : la période rejoint les exports sous « Options avancées », pour que le
+   tiroir mobile n'affiche que ce qui sert à signaler et à retrouver un point.
+   Retour à l'affichage bureau : le bloc reprend sa place d'origine. */
+const blocPeriode = document.getElementById("blocPeriode");
+const zoneAvance  = document.getElementById("zoneAvance");
+const btnAvance   = document.getElementById("btnAvance");
+
+function replierAvance(){
+  document.body.classList.remove("avance");
+  btnAvance.setAttribute("aria-expanded","false");
+  btnAvance.textContent = "▾ Options avancées (période, exports)";
+}
+btnAvance.onclick = ()=>{
+  if(document.body.classList.contains("avance")) return replierAvance();
+  document.body.classList.add("avance");
+  btnAvance.setAttribute("aria-expanded","true");
+  btnAvance.textContent = "▴ Masquer les options avancées";
+};
+
 function appliquerTactile(on){
   document.body.classList.toggle("tactile", on);
   document.getElementById("btnTactile").classList.toggle("active", on);
+  if(on){ zoneAvance.prepend(blocPeriode); }
+  else  { document.getElementById("ancrePeriode").after(blocPeriode); replierAvance(); }
   if(!on) fermerTiroir();
   setTimeout(()=>map.invalidateSize(),150);
 }
