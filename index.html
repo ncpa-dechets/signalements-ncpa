@@ -687,7 +687,9 @@ html,body{margin:0;padding:0;height:100%}
 body{
   font-family:Calibri,"Segoe UI",system-ui,sans-serif;
   color:#222;background:#fff;
-  display:flex;flex-direction:column;height:100vh;overflow:hidden;
+  /* 100dvh : sur mobile, 100vh compte aussi la bande masquée par la barre
+     d'adresse du navigateur ; le bas de la carte passait dessous. */
+  display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden;
 }
 header{
   border-bottom:3px solid var(--rouge);
@@ -866,7 +868,7 @@ body.tactile .photo-del{width:28px;height:28px;font-size:14px}
    Piloté par la classe body.tactile, pas par une media query seule : l'agent
    peut le forcer depuis l'en-tête, et on peut le tester depuis un poste fixe.
    ========================================================================= */
-#btnFiltres,#btnInstall{display:none}
+#btnFiltres{display:none}
 #btnTactile.active,#btnFiltres.active{background:var(--rouge);color:#fff;border-color:var(--rouge)}
 #voile{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:1390;display:none}
 #voile.on{display:block}
@@ -883,8 +885,11 @@ body.tactile .photo-del{width:28px;height:28px;font-size:14px}
         min-height:52px;box-shadow:0 3px 12px rgba(0,0,0,.35)}
 #btnIci:hover{background:#9c1721}
 #btnIci[disabled]{opacity:.65}
-body.tactile #btnIci{display:block}
+/* remonté : en bas d'écran mobile il tombait sous la barre du navigateur */
+body.tactile #btnIci{display:block;bottom:calc(74px + env(safe-area-inset-bottom))}
 body.lecture #btnIci{display:none!important}
+/* même remontée pour le volet Street View, qui occupe le même bas d'écran */
+body.tactile #svPanel{bottom:calc(64px + env(safe-area-inset-bottom))}
 #svPanel.open ~ #btnIci{display:none}
 
 body.tactile header{padding:6px 10px;gap:8px}
@@ -936,8 +941,9 @@ body.tactile #zoneAvance .periode input{flex:1 1 0;min-width:0;width:100%}
 
 @media(max-width:860px){
   .searchbox{flex:1 1 100%;max-width:none;order:3}
-  #svPanel{left:10px;right:10px;width:auto}
-  #svPanelFrame{height:210px}
+  #svPanel{left:10px;right:10px;width:auto;
+           bottom:calc(64px + env(safe-area-inset-bottom))}
+  #svPanelFrame{height:200px}
 }
 </style>
 </head>
@@ -956,7 +962,6 @@ body.tactile #zoneAvance .periode input{flex:1 1 0;min-width:0;width:100%}
   <div class="hdr-right">
     <button id="btnFiltres" title="Ouvrir les filtres et les exports">☰ Filtres</button>
     <span id="syncBadge">Mode local</span>
-    <button id="btnInstall" title="Installer sur l'écran d'accueil">⤓ Installer</button>
     <button id="btnSvMode" title="Ouvrir Street View sur un point de la carte">Street View</button>
     <button id="btnTable">Tableau</button>
     <button id="btnTactile" title="Basculer en affichage tactile (terrain)">🖐</button>
@@ -2177,23 +2182,10 @@ document.getElementById("btnTactile").onclick = ()=>{
 };
 
 /* =========================================================================
-   INSTALLATION SUR L'ÉCRAN D'ACCUEIL + ÉTAT DU RÉSEAU
-   Aucun service worker : le manifeste suffit désormais à rendre la page
-   installable sur Chrome Android. À ajouter plus tard si le hors-ligne complet
-   devient nécessaire.
+   ÉTAT DU RÉSEAU
+   Pas d'invite d'installation : le service informatique de la collectivité
+   n'autorise pas l'ajout d'applications sur les tablettes de terrain.
    ========================================================================= */
-let INVITE_INSTALL = null;
-const btnInstall = document.getElementById("btnInstall");
-window.addEventListener("beforeinstallprompt", e=>{
-  e.preventDefault(); INVITE_INSTALL = e;
-  btnInstall.style.display = "inline-block";
-});
-btnInstall.onclick = ()=>{
-  if(!INVITE_INSTALL) return;
-  btnInstall.style.display = "none";
-  INVITE_INSTALL.prompt(); INVITE_INSTALL = null;
-};
-window.addEventListener("appinstalled", ()=>{ btnInstall.style.display = "none"; });
 
 window.addEventListener("offline", ()=>
   badge("err","Hors ligne — saisie conservée sur l'appareil"));
