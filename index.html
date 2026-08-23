@@ -1460,6 +1460,15 @@ let SUGG_ABORT = null; // annule le lot de requêtes d'une recherche dépassée
 
 function fermerSugg(){ qAdrList.classList.remove("open"); SUGG_I = -1; }
 
+/* Une recherche déjà faite ne repart pas sur le réseau. Un lot coûte douze
+   requêtes — la BAN n'accepte qu'un code postal à la fois — et sur le terrain la
+   même rue est cherchée plusieurs fois dans la journée, effacée, retapée. Le
+   cache vit le temps de la session ; le référentiel d'adresses, lui, bouge à
+   l'échelle du mois. Seules les réponses obtenues sont retenues : une recherche
+   tombée faute de réseau doit pouvoir être retentée. */
+const SUGG_CACHE = new Map();
+const SUGG_CACHE_MAX = 60;
+
 function poserMarqueurAdresse(lat, lon, libelle){
   ADR_LAYER.clearLayers();
   L.marker([lat,lon],{icon:L.divIcon({
@@ -1507,6 +1516,9 @@ function afficherSugg(items, messageVide){
 
 async function chercherAdresse(q){
   const jeton = ++SUGG_SEQ;
+  const clef = q.trim().toLowerCase();
+  const connu = SUGG_CACHE.get(clef);
+  if(connu){ afficherSugg(connu, "Aucune adresse trouvée sur le territoire NCPA."); return; }
   const c = litCoord(q);
   if(c){
     afficherSugg([{lat:c.lat, lon:c.lon,
@@ -1549,6 +1561,8 @@ async function chercherAdresse(q){
       lib: f.properties.name || f.properties.label || "",
       sub: [f.properties.postcode, f.properties.city].filter(Boolean).join(" ")
     }));
+  SUGG_CACHE.set(clef, items);
+  if(SUGG_CACHE.size > SUGG_CACHE_MAX) SUGG_CACHE.delete(SUGG_CACHE.keys().next().value);
   afficherSugg(items, "Aucune adresse trouvée sur le territoire NCPA.");
 }
 
