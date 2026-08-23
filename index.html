@@ -873,6 +873,17 @@ body.tactile .photo-del{width:28px;height:28px;font-size:14px}
 #voile{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:1390;display:none}
 #voile.on{display:block}
 
+/* Pastille de regroupement, posée en vue d'ensemble seulement (voir grouper()).
+   L'anneau reprend la proportion des statuts du groupe : un amas majoritairement
+   rouge se repère sans avoir à zoomer. Le centre reste neutre — le prendre dans
+   la palette des statuts le ferait lire comme un statut. */
+.amas{border-radius:50%;display:flex;align-items:center;justify-content:center;
+      box-shadow:0 1px 5px rgba(0,0,0,.45);cursor:pointer}
+.amas span{display:flex;align-items:center;justify-content:center;
+           width:72%;height:72%;border-radius:50%;background:#3a3a3a;
+           color:#fff;font-weight:700;font-size:12.5px}
+body.tactile .amas span{font-size:14px}
+
 /* repère de position GPS */
 .pin-geo{width:16px;height:16px;border-radius:50%;background:#1565C0;
          border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5)}
@@ -1388,6 +1399,7 @@ let DATA = [];
 let COUCHE = L.layerGroup().addTo(map);
 let MARQUEURS = {};      // id -> marker
 let VUS = [];            // dernier jeu passé au travers des filtres
+const AMAS_LAYER = L.layerGroup().addTo(map);   // pastilles de regroupement
 let SELECTION = null;    // id sélectionné
 let MODE_AJOUT = false;
 let MODE_SV = false;     // mode « clic sur la carte pour voir Street View »
@@ -1680,31 +1692,148 @@ function icone(statut, sel){
   });
 }
 
+/* Les gestionnaires ne retiennent que l'identifiant et relisent DATA au moment du
+   clic : les marqueurs survivent maintenant aux redessins, et un enregistrement
+   remplacé par une synchronisation rendrait un objet capturé obsolète. */
+function brancherMarqueur(m, id){
+  m.on("click", ()=>{
+    const r = DATA.find(x=>x.id===id); if(!r) return;
+    if(MODE_SV) ouvrirSvFlottant(r.lat, r.lon, [r.rue, r.commune].filter(Boolean).join(" — "));
+    else ouvrirFiche(id);
+  });
+  m.on("dragend", ev=>{
+    const q = ev.target.getLatLng();
+    const rec = DATA.find(x=>x.id===id) || BROUILLON;
+    if(!rec) return;
+    rec.lat=+q.lat.toFixed(6); rec.lon=+q.lng.toFixed(6);
+    document.getElementById("fmCoord").value = rec.lat+", "+rec.lon;
+    geocodeInverse(rec.lat,rec.lon,true);
+  });
+}
+
+/* Pose les points individuels par différence : on ne retire que les sortants et
+   on ne crée que les entrants. Tout recréer à chaque frappe de filtre coûtait
+   l'essentiel du temps de redessin. _etat résume ce qui se voit d'un marqueur,
+   pour ne rafraîchir son icône que si elle a réellement changé. */
+function majPoints(liste){
+  const voulus = new Map(liste.map(r=>[r.id, r]));
+  Object.keys(MARQUEURS).forEach(id=>{
+    if(voulus.has(id) || (BROUILLON && id === BROUILLON.id)) return;
+    COUCHE.removeLayer(MARQUEURS[id]);
+    delete MARQUEURS[id];
+  });
+  voulus.forEach((r,id)=>{
+    const etat = r.statut + "|" + (id===SELECTION) + "|" + r.lat + "|" + r.lon;
+    let m = MARQUEURS[id];
+    if(!m){
+      m = MARQUEURS[id] = L.marker([r.lat,r.lon],{icon:icone(r.statut, id===SELECTION)});
+      brancherMarqueur(m, id);
+      COUCHE.addLayer(m);
+    }else if(m._etat !== etat){
+      m.setLatLng([r.lat,r.lon]);
+      m.setIcon(icone(r.statut, id===SELECTION));
+    }else return;
+    m._etat = etat;
+  });
+}
+
+/* =========================================================================
+   REGROUPEMENT — vue d'ensemble seulement
+   Au zoom de travail, chaque signalement garde son propre point : le
+   comportement est celui d'avant, au marqueur près. En dessous, les points
+   d'une même case de la grille écran sont réunis sous une pastille comptée,
+   sans quoi la vue du territoire entier devient illisible — et lente — dès
+   quelques centaines de signalements.
+   ========================================================================= */
+const AMAS_ZOOM = 17;    // à partir de ce zoom, plus aucun regroupement
+const AMAS_CASE = 64;    // côté d'une case de la grille, en pixels écran
+
+function grouper(liste, zoom){
+  const cases = new Map();
+  liste.forEach(r=>{
+    const q = map.project([r.lat, r.lon], zoom);
+    const k = Math.floor(q.x/AMAS_CASE) + ":" + Math.floor(q.y/AMAS_CASE);
+    let c = cases.get(k);
+    if(!c) cases.set(k, c = {rs:[], x:0, y:0});
+    c.rs.push(r); c.x += q.x; c.y += q.y;
+  });
+  return [...cases.values()];
+}
+
+function iconeAmas(rs){
+  const nb = rs.length;
+  const d = nb < 10 ? 34 : nb < 100 ? 40 : 46;
+  let debut = 0; const parts = [];
+  ["signale","encours","regle"].forEach(st=>{
+    const part = rs.filter(r=>r.statut===st).length / nb;
+    if(!part) return;
+    parts.push(STATUTS[st].c + " " + (debut*100).toFixed(2) + "% "
+               + ((debut+part)*100).toFixed(2) + "%");
+    debut += part;
+  });
+  return L.divIcon({
+    className:"", iconSize:[d,d], iconAnchor:[d/2,d/2],
+    html:'<div class="amas" style="width:'+d+'px;height:'+d+'px;'
+       + 'background:conic-gradient(' + parts.join(",") + ')"><span>' + nb + '</span></div>'
+  });
+}
+
+function majAmas(groupes, zoom){
+  AMAS_LAYER.clearLayers();
+  groupes.forEach(c=>{
+    const centre = map.unproject([c.x/c.rs.length, c.y/c.rs.length], zoom);
+    L.marker(centre, {icon: iconeAmas(c.rs)})
+     .on("click", ()=>map.fitBounds(
+        L.latLngBounds(c.rs.map(r=>[r.lat,r.lon])).pad(.25), {maxZoom: AMAS_ZOOM}))
+     .addTo(AMAS_LAYER);
+  });
+}
+
+/* Au zoom de travail, un point hors cadre reste un nœud du document que le
+   navigateur doit porter : sur le terrain, la tablette affiche deux ou trois
+   signalements et en portait deux mille. On ne pose que ce qui est en vue, avec
+   une marge d'un demi-écran pour qu'un déplacement du doigt ne fasse rien
+   apparaître sous les yeux de l'agent. Le signalement ouvert est toujours posé,
+   où qu'il soit : la fiche et le bouton de repositionnement en dépendent. */
+function enVue(){
+  const b = map.getBounds().pad(0.5);
+  return VUS.filter(r => r.id === SELECTION || b.contains([r.lat, r.lon]));
+}
+
+function dessinerCarte(){
+  const zoom = map.getZoom();
+  const vue = enVue();
+  if(zoom >= AMAS_ZOOM){                 // zoom de travail : rien n'est regroupé
+    if(AMAS_LAYER.getLayers().length) AMAS_LAYER.clearLayers();
+    majPoints(vue);
+    return;
+  }
+  // Le signalement ouvert reste un point à lui seul : il doit rester repérable
+  // et déplaçable, et il est retiré du décompte pour ne pas être compté deux fois.
+  const groupes = grouper(vue.filter(r=>r.id !== SELECTION), zoom);
+  const seuls = [], amas = [];
+  // Une case qui ne tient qu'un point n'a rien à regrouper : on garde le marqueur
+  // ordinaire, cliquable, plutôt qu'une pastille marquée « 1 ».
+  groupes.forEach(c => (c.rs.length === 1 ? seuls.push(c.rs[0]) : amas.push(c)));
+  if(SELECTION){ const r = VUS.find(x=>x.id===SELECTION); if(r) seuls.push(r); }
+  majPoints(seuls);
+  majAmas(amas, zoom);
+}
+
+/* La grille de regroupement est exprimée en pixels écran et le tri en vue dépend
+   du cadre : les deux se rejouent à chaque déplacement de la carte. Le redessin
+   étant différentiel, un panoramique ne coûte plus que la différence. */
+map.on("moveend resize", dessinerCarte);
+
 function dessiner(){
-  COUCHE.clearLayers(); MARQUEURS = {};
+  VUS = filtrer();
   // le brouillon vit hors de COUCHE : on le remet dans l'index des marqueurs
   if(BROUILLON) BROUILLON_LAYER.eachLayer(l=>{ MARQUEURS[BROUILLON.id] = l; });
-  const vus = VUS = filtrer();
-  vus.forEach(r=>{
-    const m = L.marker([r.lat,r.lon],{icon:icone(r.statut, r.id===SELECTION)});
-    m.on("click", ()=>{
-      if(MODE_SV) ouvrirSvFlottant(r.lat, r.lon, [r.rue, r.commune].filter(Boolean).join(" — "));
-      else ouvrirFiche(r.id);
-    });
-    m.on("dragend", ev=>{
-      const p = ev.target.getLatLng();
-      const rec = DATA.find(x=>x.id===r.id) || BROUILLON;
-      rec.lat=+p.lat.toFixed(6); rec.lon=+p.lng.toFixed(6);
-      document.getElementById("fmCoord").value = rec.lat+", "+rec.lon;
-      geocodeInverse(rec.lat,rec.lon,true);
-    });
-    m.addTo(COUCHE);
-    MARQUEURS[r.id]=m;
-  });
+  dessinerCarte();
   majCommunes();
-  majStats(vus);
-  majTable(vus);
-  majBoutonDeplacer();   // le marqueur sélectionné vient d'être recréé
+  majStats(VUS);
+  majTable(VUS);
+  majBoutonDeplacer();
 }
 
 function majStats(vus){
