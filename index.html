@@ -1810,6 +1810,14 @@ function majAmas(groupes, zoom){
    apparaître sous les yeux de l'agent. Le signalement ouvert est toujours posé,
    où qu'il soit : la fiche et le bouton de repositionnement en dépendent. */
 function enVue(){
+  /* Leaflet garde en cache la taille de son conteneur et ne la reprend qu'à
+     invalidateSize(). Tant qu'elle vaut zéro — conteneur pas encore disposé au
+     premier affichage, page ouverte dans un onglet d'arrière-plan —, getBounds()
+     se réduit à un point et ce tri viderait la carte de bout en bout. Dans ce
+     cas on ne trie pas : mieux vaut poser tous les points que n'en poser aucun.
+     Le redessin déclenché par « resize » remettra les choses en ordre. */
+  const t = map.getSize();
+  if(!t.x || !t.y) return VUS;
   const b = map.getBounds().pad(0.5);
   return VUS.filter(r => r.id === SELECTION || b.contains([r.lat, r.lon]));
 }
@@ -2584,6 +2592,10 @@ document.getElementById("btnSync").onclick = async ()=>{ DATA = await Store.char
   majMode();
   DATA = await Store.charger();
   majInfoStockage(DATA);
+  // Le chargement des données passe par le réseau : la mise en page est faite
+  // depuis longtemps, mais Leaflet peut encore tenir de son conteneur une mesure
+  // prise trop tôt. On la reprend avant le premier tracé.
+  map.invalidateSize();
   dessiner();
   // resynchronisation automatique toutes les 3 minutes en mode partagé
   // Une fiche ouverte n'est pas remplacée sous les doigts de l'agent : charger()
