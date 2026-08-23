@@ -873,6 +873,17 @@ body.tactile .photo-del{width:28px;height:28px;font-size:14px}
 #voile{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:1390;display:none}
 #voile.on{display:block}
 
+/* Pastille de regroupement, posée en vue d'ensemble seulement (voir grouper()).
+   L'anneau reprend la proportion des statuts du groupe : un amas majoritairement
+   rouge se repère sans avoir à zoomer. Le centre reste neutre — le prendre dans
+   la palette des statuts le ferait lire comme un statut. */
+.amas{border-radius:50%;display:flex;align-items:center;justify-content:center;
+      box-shadow:0 1px 5px rgba(0,0,0,.45);cursor:pointer}
+.amas span{display:flex;align-items:center;justify-content:center;
+           width:72%;height:72%;border-radius:50%;background:#3a3a3a;
+           color:#fff;font-weight:700;font-size:12.5px}
+body.tactile .amas span{font-size:14px}
+
 /* repère de position GPS */
 .pin-geo{width:16px;height:16px;border-radius:50%;background:#1565C0;
          border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5)}
@@ -1252,7 +1263,14 @@ const Store = {
   distant(){ return !!CONFIG.SYNC_URL; },
 
   lireLocal(){ try{ return JSON.parse(localStorage.getItem(LS_KEY)||"[]"); }catch(e){ return []; } },
-  ecrireLocal(list){ localStorage.setItem(LS_KEY, JSON.stringify(list)); },
+  // Renvoie la liste réellement écrite, purgée de ses fantômes.
+  ecrireLocal(list){
+    const net = purger(list);
+    const json = JSON.stringify(net);
+    localStorage.setItem(LS_KEY, json);
+    majInfoStockage(net, json);
+    return net;
+  },
 
   async charger(){
     const local = this.lireLocal();
@@ -1262,8 +1280,7 @@ const Store = {
       if(!r.ok) throw new Error(r.status);
       const j = await r.json();
       const distant = Array.isArray(j) ? j : (j.records||[]);
-      const fusion = fusionner(local, distant);
-      this.ecrireLocal(fusion);
+      const fusion = this.ecrireLocal(fusionner(local, distant));
       badge("ok","Synchronisé à " + new Date().toLocaleTimeString("fr-FR").slice(0,5));
       return fusion;
     }catch(e){
@@ -1280,13 +1297,13 @@ const Store = {
     const i = list.findIndex(x=>x.id===rec.id);
     rec._maj = new Date().toISOString();
     if(i>=0) list[i]=rec; else list.push(rec);
-    this.ecrireLocal(list);
+    const net = this.ecrireLocal(list);
     if(this.distant()){
       try{ await this.envoyer({action:"upsert", record:rec});
            badge("ok","Enregistré sur le serveur"); }
       catch(e){ badge("err","Local seulement : " + e.message); }
     }
-    return list;
+    return net;
   },
 
   // Suppression logique : le marqueur _del voyage jusqu'au serveur,
@@ -1296,15 +1313,38 @@ const Store = {
     const r = list.find(x=>x.id===id);
     if(!r) return list;
     r._del = true; r._maj = new Date().toISOString();
-    this.ecrireLocal(list);
+    const net = this.ecrireLocal(list);
     if(this.distant()){
       try{ await this.envoyer({action:"upsert", record:r});
            badge("ok","Suppression enregistrée"); }
       catch(e){ badge("err","Local seulement : " + e.message); }
     }
-    return list;
+    return net;
   }
 };
+
+/* Une suppression logique doit voyager jusqu'au serveur, mais pas y séjourner
+   indéfiniment : passé ce délai, tous les postes l'ont forcément vue passer.
+   Sans purge, le quota de localStorage (~5 Mo) finit par se remplir de fantômes
+   que filtrer() doit en plus écarter à chaque redessin. */
+const PURGE_JOURS = 90;
+function purger(list){
+  const limite = new Date(Date.now() - PURGE_JOURS*86400000).toISOString();
+  return list.filter(r => !(r._del && (r._maj||"") < limite));
+}
+
+/* Occupation réelle de la réserve du navigateur. L'encart n'affichait qu'un
+   texte figé, sans jamais dire où en était le stockage. */
+function majInfoStockage(list, json){
+  const el = document.getElementById("storageInfo");
+  if(!el) return;
+  const ko = Math.round((json || JSON.stringify(list||[])).length * 2 / 1024);  // UTF-16
+  const vivants = (list||[]).filter(r=>!r._del).length;
+  el.textContent = (Store.distant()
+      ? "Mode partagé : données synchronisées avec le classeur Google, copie locale de secours si le réseau tombe. "
+      : "Mode local : données stockées dans ce navigateur uniquement. Exportez régulièrement. ")
+    + vivants + " signalement(s) — " + ko + " Ko utilisés sur environ 5 000 Ko.";
+}
 
 // Fusion local/distant : la version la plus récemment modifiée gagne.
 function fusionner(a,b){
@@ -1358,10 +1398,20 @@ map.on("mousemove", e=>{
 let DATA = [];
 let COUCHE = L.layerGroup().addTo(map);
 let MARQUEURS = {};      // id -> marker
+let VUS = [];            // dernier jeu passé au travers des filtres
+const AMAS_LAYER = L.layerGroup().addTo(map);   // pastilles de regroupement
 let SELECTION = null;    // id sélectionné
 let MODE_AJOUT = false;
 let MODE_SV = false;     // mode « clic sur la carte pour voir Street View »
 let BROUILLON = null;    // enregistrement en cours de création
+
+/* Le marqueur d'un signalement en cours de création vit dans sa propre couche :
+   dessiner() vide COUCHE à chaque filtre et à chaque resynchronisation, le point
+   provisoire y disparaissait au milieu de la saisie. */
+const BROUILLON_LAYER = L.layerGroup().addTo(map);
+/* « Repositionner le point » : l'état est tenu ici et non dans le marqueur, que
+   dessiner() recrée sans son mode déplacement. */
+let DEPLACEMENT_ACTIF = false;
 
 /* ---- modes exclusifs : les deux se disputent le clic carte ---- */
 function majModesUI(){
@@ -1410,6 +1460,15 @@ let SUGG_ABORT = null; // annule le lot de requêtes d'une recherche dépassée
 
 function fermerSugg(){ qAdrList.classList.remove("open"); SUGG_I = -1; }
 
+/* Une recherche déjà faite ne repart pas sur le réseau. Un lot coûte douze
+   requêtes — la BAN n'accepte qu'un code postal à la fois — et sur le terrain la
+   même rue est cherchée plusieurs fois dans la journée, effacée, retapée. Le
+   cache vit le temps de la session ; le référentiel d'adresses, lui, bouge à
+   l'échelle du mois. Seules les réponses obtenues sont retenues : une recherche
+   tombée faute de réseau doit pouvoir être retentée. */
+const SUGG_CACHE = new Map();
+const SUGG_CACHE_MAX = 60;
+
 function poserMarqueurAdresse(lat, lon, libelle){
   ADR_LAYER.clearLayers();
   L.marker([lat,lon],{icon:L.divIcon({
@@ -1457,6 +1516,9 @@ function afficherSugg(items, messageVide){
 
 async function chercherAdresse(q){
   const jeton = ++SUGG_SEQ;
+  const clef = q.trim().toLowerCase();
+  const connu = SUGG_CACHE.get(clef);
+  if(connu){ afficherSugg(connu, "Aucune adresse trouvée sur le territoire NCPA."); return; }
   const c = litCoord(q);
   if(c){
     afficherSugg([{lat:c.lat, lon:c.lon,
@@ -1499,6 +1561,8 @@ async function chercherAdresse(q){
       lib: f.properties.name || f.properties.label || "",
       sub: [f.properties.postcode, f.properties.city].filter(Boolean).join(" ")
     }));
+  SUGG_CACHE.set(clef, items);
+  if(SUGG_CACHE.size > SUGG_CACHE_MAX) SUGG_CACHE.delete(SUGG_CACHE.keys().next().value);
   afficherSugg(items, "Aucune adresse trouvée sur le territoire NCPA.");
 }
 
@@ -1642,28 +1706,148 @@ function icone(statut, sel){
   });
 }
 
-function dessiner(){
-  COUCHE.clearLayers(); MARQUEURS = {};
-  const vus = filtrer();
-  vus.forEach(r=>{
-    const m = L.marker([r.lat,r.lon],{icon:icone(r.statut, r.id===SELECTION)});
-    m.on("click", ()=>{
-      if(MODE_SV) ouvrirSvFlottant(r.lat, r.lon, [r.rue, r.commune].filter(Boolean).join(" — "));
-      else ouvrirFiche(r.id);
-    });
-    m.on("dragend", ev=>{
-      const p = ev.target.getLatLng();
-      const rec = DATA.find(x=>x.id===r.id) || BROUILLON;
-      rec.lat=+p.lat.toFixed(6); rec.lon=+p.lng.toFixed(6);
-      document.getElementById("fmCoord").value = rec.lat+", "+rec.lon;
-      geocodeInverse(rec.lat,rec.lon,true);
-    });
-    m.addTo(COUCHE);
-    MARQUEURS[r.id]=m;
+/* Les gestionnaires ne retiennent que l'identifiant et relisent DATA au moment du
+   clic : les marqueurs survivent maintenant aux redessins, et un enregistrement
+   remplacé par une synchronisation rendrait un objet capturé obsolète. */
+function brancherMarqueur(m, id){
+  m.on("click", ()=>{
+    const r = DATA.find(x=>x.id===id); if(!r) return;
+    if(MODE_SV) ouvrirSvFlottant(r.lat, r.lon, [r.rue, r.commune].filter(Boolean).join(" — "));
+    else ouvrirFiche(id);
   });
+  m.on("dragend", ev=>{
+    const q = ev.target.getLatLng();
+    const rec = DATA.find(x=>x.id===id) || BROUILLON;
+    if(!rec) return;
+    rec.lat=+q.lat.toFixed(6); rec.lon=+q.lng.toFixed(6);
+    document.getElementById("fmCoord").value = rec.lat+", "+rec.lon;
+    geocodeInverse(rec.lat,rec.lon,true);
+  });
+}
+
+/* Pose les points individuels par différence : on ne retire que les sortants et
+   on ne crée que les entrants. Tout recréer à chaque frappe de filtre coûtait
+   l'essentiel du temps de redessin. _etat résume ce qui se voit d'un marqueur,
+   pour ne rafraîchir son icône que si elle a réellement changé. */
+function majPoints(liste){
+  const voulus = new Map(liste.map(r=>[r.id, r]));
+  Object.keys(MARQUEURS).forEach(id=>{
+    if(voulus.has(id) || (BROUILLON && id === BROUILLON.id)) return;
+    COUCHE.removeLayer(MARQUEURS[id]);
+    delete MARQUEURS[id];
+  });
+  voulus.forEach((r,id)=>{
+    const etat = r.statut + "|" + (id===SELECTION) + "|" + r.lat + "|" + r.lon;
+    let m = MARQUEURS[id];
+    if(!m){
+      m = MARQUEURS[id] = L.marker([r.lat,r.lon],{icon:icone(r.statut, id===SELECTION)});
+      brancherMarqueur(m, id);
+      COUCHE.addLayer(m);
+    }else if(m._etat !== etat){
+      m.setLatLng([r.lat,r.lon]);
+      m.setIcon(icone(r.statut, id===SELECTION));
+    }else return;
+    m._etat = etat;
+  });
+}
+
+/* =========================================================================
+   REGROUPEMENT — vue d'ensemble seulement
+   Au zoom de travail, chaque signalement garde son propre point : le
+   comportement est celui d'avant, au marqueur près. En dessous, les points
+   d'une même case de la grille écran sont réunis sous une pastille comptée,
+   sans quoi la vue du territoire entier devient illisible — et lente — dès
+   quelques centaines de signalements.
+   ========================================================================= */
+const AMAS_ZOOM = 17;    // à partir de ce zoom, plus aucun regroupement
+const AMAS_CASE = 64;    // côté d'une case de la grille, en pixels écran
+
+function grouper(liste, zoom){
+  const cases = new Map();
+  liste.forEach(r=>{
+    const q = map.project([r.lat, r.lon], zoom);
+    const k = Math.floor(q.x/AMAS_CASE) + ":" + Math.floor(q.y/AMAS_CASE);
+    let c = cases.get(k);
+    if(!c) cases.set(k, c = {rs:[], x:0, y:0});
+    c.rs.push(r); c.x += q.x; c.y += q.y;
+  });
+  return [...cases.values()];
+}
+
+function iconeAmas(rs){
+  const nb = rs.length;
+  const d = nb < 10 ? 34 : nb < 100 ? 40 : 46;
+  let debut = 0; const parts = [];
+  ["signale","encours","regle"].forEach(st=>{
+    const part = rs.filter(r=>r.statut===st).length / nb;
+    if(!part) return;
+    parts.push(STATUTS[st].c + " " + (debut*100).toFixed(2) + "% "
+               + ((debut+part)*100).toFixed(2) + "%");
+    debut += part;
+  });
+  return L.divIcon({
+    className:"", iconSize:[d,d], iconAnchor:[d/2,d/2],
+    html:'<div class="amas" style="width:'+d+'px;height:'+d+'px;'
+       + 'background:conic-gradient(' + parts.join(",") + ')"><span>' + nb + '</span></div>'
+  });
+}
+
+function majAmas(groupes, zoom){
+  AMAS_LAYER.clearLayers();
+  groupes.forEach(c=>{
+    const centre = map.unproject([c.x/c.rs.length, c.y/c.rs.length], zoom);
+    L.marker(centre, {icon: iconeAmas(c.rs)})
+     .on("click", ()=>map.fitBounds(
+        L.latLngBounds(c.rs.map(r=>[r.lat,r.lon])).pad(.25), {maxZoom: AMAS_ZOOM}))
+     .addTo(AMAS_LAYER);
+  });
+}
+
+/* Au zoom de travail, un point hors cadre reste un nœud du document que le
+   navigateur doit porter : sur le terrain, la tablette affiche deux ou trois
+   signalements et en portait deux mille. On ne pose que ce qui est en vue, avec
+   une marge d'un demi-écran pour qu'un déplacement du doigt ne fasse rien
+   apparaître sous les yeux de l'agent. Le signalement ouvert est toujours posé,
+   où qu'il soit : la fiche et le bouton de repositionnement en dépendent. */
+function enVue(){
+  const b = map.getBounds().pad(0.5);
+  return VUS.filter(r => r.id === SELECTION || b.contains([r.lat, r.lon]));
+}
+
+function dessinerCarte(){
+  const zoom = map.getZoom();
+  const vue = enVue();
+  if(zoom >= AMAS_ZOOM){                 // zoom de travail : rien n'est regroupé
+    if(AMAS_LAYER.getLayers().length) AMAS_LAYER.clearLayers();
+    majPoints(vue);
+    return;
+  }
+  // Le signalement ouvert reste un point à lui seul : il doit rester repérable
+  // et déplaçable, et il est retiré du décompte pour ne pas être compté deux fois.
+  const groupes = grouper(vue.filter(r=>r.id !== SELECTION), zoom);
+  const seuls = [], amas = [];
+  // Une case qui ne tient qu'un point n'a rien à regrouper : on garde le marqueur
+  // ordinaire, cliquable, plutôt qu'une pastille marquée « 1 ».
+  groupes.forEach(c => (c.rs.length === 1 ? seuls.push(c.rs[0]) : amas.push(c)));
+  if(SELECTION){ const r = VUS.find(x=>x.id===SELECTION); if(r) seuls.push(r); }
+  majPoints(seuls);
+  majAmas(amas, zoom);
+}
+
+/* La grille de regroupement est exprimée en pixels écran et le tri en vue dépend
+   du cadre : les deux se rejouent à chaque déplacement de la carte. Le redessin
+   étant différentiel, un panoramique ne coûte plus que la différence. */
+map.on("moveend resize", dessinerCarte);
+
+function dessiner(){
+  VUS = filtrer();
+  // le brouillon vit hors de COUCHE : on le remet dans l'index des marqueurs
+  if(BROUILLON) BROUILLON_LAYER.eachLayer(l=>{ MARQUEURS[BROUILLON.id] = l; });
+  dessinerCarte();
   majCommunes();
-  majStats(vus);
-  majTable(vus);
+  majStats(VUS);
+  majTable(VUS);
+  majBoutonDeplacer();
 }
 
 function majStats(vus){
@@ -1673,15 +1857,30 @@ function majStats(vus){
   document.getElementById("stReg").textContent = vus.filter(r=>r.statut==="regle").length;
 }
 
+/* La liste ne dépend que de DATA, jamais des filtres : on ne reconstruit le menu
+   que lorsqu'elle change réellement, et non à chaque frappe dans le filtre texte. */
+let COMMUNES_SIG = null;
 function majCommunes(){
-  const sel = document.getElementById("fCommune"); const cur = sel.value;
   const list = [...new Set(DATA.filter(r=>!r._del).map(r=>r.commune).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"fr"));
-  sel.innerHTML = '<option value="">Toutes</option>'+list.map(c=>`<option>${c}</option>`).join("");
+  const sig = list.join("\u001f");
+  if(sig === COMMUNES_SIG) return;
+  COMMUNES_SIG = sig;
+  const sel = document.getElementById("fCommune"); const cur = sel.value;
+  sel.innerHTML = '<option value="">Toutes</option>'+list.map(c=>`<option>${esc(c)}</option>`).join("");
   if(list.includes(cur)) sel.value = cur;
 }
 
 let TRI = {k:"date_signalement", asc:false};
+/* Le tableau n'est reconstruit que lorsqu'il est déplié. En mode tactile il est
+   masqué et son bouton retiré de l'en-tête : on fabriquait à chaque redessin des
+   milliers de lignes de HTML que personne ne verrait jamais, sur l'appareil le
+   plus lent du parc. TABLE_A_JOUR dit s'il faut le construire à l'ouverture. */
+let TABLE_A_JOUR = false;
 function majTable(vus){
+  if(!document.getElementById("tablewrap").classList.contains("open")){
+    TABLE_A_JOUR = false; return;
+  }
+  TABLE_A_JOUR = true;
   const tb = document.querySelector("#tbl tbody");
   const l = [...vus].sort((a,b)=>{
     const x=valeurTri(a,TRI.k), y=valeurTri(b,TRI.k);
@@ -1697,7 +1896,8 @@ function majTable(vus){
   });
 }
 document.querySelectorAll("#tbl th").forEach(th=>{
-  th.onclick = ()=>{ const k=th.dataset.k; TRI = {k, asc: TRI.k===k ? !TRI.asc : true}; dessiner(); };
+  // Le tri ne concerne que le tableau : inutile de repasser sur la carte.
+  th.onclick = ()=>{ const k=th.dataset.k; TRI = {k, asc: TRI.k===k ? !TRI.asc : true}; majTable(VUS); };
 });
 
 const esc = s => (s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -1725,6 +1925,9 @@ const fmtDate = d => d ? d.split("-").reverse().join("/") : "";
    ========================================================================= */
 function ouvrirFiche(id){
   const r = DATA.find(x=>x.id===id); if(!r) return;
+  if(!quitterFiche()) return;          // une saisie en cours allait être écrasée
+  BROUILLON_LAYER.clearLayers();
+  DEPLACEMENT_ACTIF = false;
   BROUILLON = null; SELECTION = id;
   document.getElementById("formTitre").textContent = "Fiche signalement";
   peupler(r);
@@ -1752,6 +1955,10 @@ function peupler(r){
   majPhotos();
   document.getElementById("svWrap").style.display="none";
   document.getElementById("svFrame").src="";
+  // Adresse déjà en fiche : elle fait référence tant que l'agent n'y touche pas
+  // (voir geocodeInverse), et sert de point zéro à la détection de modification.
+  GEO_POSE = {rue: r.rue||"", commune: r.commune||""};
+  EMPREINTE = empreinteFiche();
 }
 // Remplit le couple catégorie/précision. Un code absent du référentiel est ajouté
 // tel quel comme option, pour ne pas le perdre silencieusement à l'enregistrement.
@@ -1770,24 +1977,55 @@ function peuplerType(cat, sous){
 const fm = (n,v)=>{ document.getElementById("fm"+n).value = v; };
 const fmv = n => document.getElementById("fm"+n).value;
 
+/* Empreinte de la fiche affichée, relevée en fin de peupler() et à chaque
+   enregistrement. Comparée à la fermeture, elle dit si l'agent a saisi quelque
+   chose qu'il s'apprête à perdre. */
+const CHAMPS_FICHE = ["Type","SousType","Statut","Commune","Rue","Auteur","Date","Commentaire"];
+let EMPREINTE = "";
+const empreinteFiche = ()=>
+  CHAMPS_FICHE.map(fmv).join("\u001f") + "\u001f" + FICHE_PHOTOS.map(p=>p.id).join(",");
+
+/* Retourne false si l'agent refuse d'abandonner sa saisie. Sur un signalement
+   jamais enregistré, les photos déjà déposées sur le Drive sont retirées :
+   sinon elles resteraient dans le dossier sans rien pour les rattacher. */
+function quitterFiche(){
+  if(!SELECTION && !BROUILLON) return true;
+  if(empreinteFiche() === EMPREINTE) return true;
+  if(!confirm("Cette fiche contient des modifications non enregistrées.\n\nLes abandonner ?")) return false;
+  if(BROUILLON) FICHE_PHOTOS.forEach(p=>{
+    try{ Store.appeler({action:"delphoto", id:p.id}).catch(()=>{}); }catch(e){}
+  });
+  return true;
+}
+
 function ouvrirPanneau(){
   fermerTiroir();
   const f = document.getElementById("form");
   f.classList.add("open"); f.scrollTop = 0;
   setTimeout(()=>map.invalidateSize(),80);
 }
-function fermerPanneau(){
+/* force=true : fermeture consécutive à un enregistrement ou à une suppression,
+   il n'y a plus rien à perdre. Sinon on prévient avant de jeter la saisie. */
+function fermerPanneau(force){
+  if(!force && !quitterFiche()) return;
   document.getElementById("form").classList.remove("open");
-  document.getElementById("btnMove").textContent = "Repositionner le point";
-  SELECTION=null; BROUILLON=null; dessiner(); setTimeout(()=>map.invalidateSize(),80);
+  DEPLACEMENT_ACTIF = false;
+  BROUILLON_LAYER.clearLayers();
+  SELECTION=null; BROUILLON=null; EMPREINTE=""; dessiner();
+  setTimeout(()=>map.invalidateSize(),80);
 }
-document.getElementById("btnClose").onclick = fermerPanneau;
-document.getElementById("btnFormClose").onclick = fermerPanneau;
+// enveloppés : passés en gestionnaires directs, l'objet Event tiendrait lieu de « force »
+document.getElementById("btnClose").onclick = ()=>fermerPanneau();
+document.getElementById("btnFormClose").onclick = ()=>fermerPanneau();
 
 // Échap ferme la fiche. Garde-fou : la barre de recherche gère déjà Échap pour
 // replier ses suggestions et ne stoppe pas la propagation.
 document.addEventListener("keydown", e=>{
   if(e.key !== "Escape") return;
+  const lb = document.getElementById("lightbox");
+  if(lb.classList.contains("on")){
+    lb.classList.remove("on"); document.getElementById("lightboxImg").src=""; return;
+  }
   if(document.getElementById("qAdrList").classList.contains("open")) return;
   if(document.getElementById("panel").classList.contains("ouvert")){ fermerTiroir(); return; }
   if(document.getElementById("form").classList.contains("open")) fermerPanneau();
@@ -1821,10 +2059,11 @@ async function enregistrerFiche(fermer){
 
   if(!fermer){                              // la fiche reste ouverte
     BROUILLON = null; SELECTION = rec.id; dessiner();
+    EMPREINTE = empreinteFiche();           // ce qui est écrit n'est plus « à perdre »
     return;
   }
   BROUILLON = null; SELECTION = null;
-  fermerPanneau();                          // retour immédiat à la carte
+  fermerPanneau(true);                      // retour immédiat à la carte
   // Store.enregistrer a déjà posé un badge : on n'écrase pas un échec d'écriture.
   if(document.getElementById("syncBadge").className !== "err"){
     badge("ok", (nouveau ? "Signalement enregistré" : "Signalement mis à jour")
@@ -1837,14 +2076,25 @@ document.getElementById("btnDelete").onclick = async ()=>{
   if(!SELECTION) return;
   if(!confirm("Supprimer définitivement ce signalement ?")) return;
   DATA = await Store.supprimer(SELECTION);
-  fermerPanneau();
+  fermerPanneau(true);
 };
 
+/* Rejoue l'état de déplacement sur le marqueur courant et met le libellé du
+   bouton en accord. Appelée à la fin de dessiner() : sans cela, le marqueur
+   recréé redevenait fixe pendant que le bouton continuait d'annoncer
+   « glissez le point », et l'agent croyait déplacer un point immobile. */
+function majBoutonDeplacer(){
+  const b = document.getElementById("btnMove");
+  b.textContent = DEPLACEMENT_ACTIF ? "✓ Glissez le point puis recliquez ici"
+                                    : "Repositionner le point";
+  const m = MARQUEURS[SELECTION || (BROUILLON&&BROUILLON.id)];
+  if(!m || !m.dragging) return;
+  if(DEPLACEMENT_ACTIF) m.dragging.enable(); else m.dragging.disable();
+}
 document.getElementById("btnMove").onclick = ()=>{
-  const id = SELECTION || (BROUILLON&&BROUILLON.id);
-  const m = MARQUEURS[id]; if(!m) return;
-  if(m.dragging.enabled()){ m.dragging.disable(); document.getElementById("btnMove").textContent="Repositionner le point"; }
-  else { m.dragging.enable(); document.getElementById("btnMove").textContent="✓ Glissez le point puis recliquez ici"; }
+  if(!MARQUEURS[SELECTION || (BROUILLON&&BROUILLON.id)]) return;
+  DEPLACEMENT_ACTIF = !DEPLACEMENT_ACTIF;
+  majBoutonDeplacer();
 };
 
 document.getElementById("btnSv").onclick = ()=>{
@@ -1995,6 +2245,8 @@ document.getElementById("btnAdd").onclick = ()=>setModeAjout(!MODE_AJOUT);
    Appelée par le clic sur la carte ET par le bouton « Signaler ici ».
    precisionM : rayon d'incertitude GPS en mètres, affiché dans la fiche. */
 function creerSignalement(lat, lon, precisionM){
+  if(!quitterFiche()) return;          // une saisie en cours allait être écrasée
+  DEPLACEMENT_ACTIF = false;
   setModeAjout(false);
   fermerTiroir();
 
@@ -2016,7 +2268,8 @@ function creerSignalement(lat, lon, precisionM){
   peupler(rec); ouvrirPanneau();
 
   // marqueur provisoire
-  const m = L.marker([rec.lat,rec.lon],{icon:icone("signale",true)}).addTo(COUCHE);
+  BROUILLON_LAYER.clearLayers();
+  const m = L.marker([rec.lat,rec.lon],{icon:icone("signale",true)}).addTo(BROUILLON_LAYER);
   MARQUEURS[rec.id]=m;
   m.on("dragend",ev=>{
     const p=ev.target.getLatLng(); rec.lat=+p.lat.toFixed(6); rec.lon=+p.lng.toFixed(6);
@@ -2108,14 +2361,31 @@ async function banReverse(lat,lon){
   }catch(e){ return null; }   /* hors ligne : saisie manuelle */
 }
 
-/* Géocodage inverse BAN : pré-remplit rue + commune (jamais écrasé si déjà saisi) */
+/* Adresse posée par le dernier géocodage. Si le champ en diffère, c'est que
+   l'agent l'a corrigée à la main : un repositionnement ne doit pas l'effacer. */
+let GEO_POSE = {rue:"", commune:""};
+let GEO_SEQ = 0;
+
+/* Géocodage inverse BAN : pré-remplit rue + commune.
+   Jeton de séquence : deux repositionnements rapprochés partaient en course et
+   la réponse la plus lente gagnait, quitte à décrire l'ancienne position. */
 async function geocodeInverse(lat,lon,forcer){
+  const jeton = ++GEO_SEQ;
+  const avant = BROUILLON || DATA.find(x=>x.id===SELECTION);
   const p = await banReverse(lat,lon);
-  if(!p) return;
-  const rue = p.street || p.name || "";
-  if(forcer || !fmv("Rue"))     fm("Rue", rue);
-  if(forcer || !fmv("Commune")) fm("Commune", p.city || "");
+  if(!p || jeton !== GEO_SEQ) return;                  // réponse dépassée
   const cible = BROUILLON || DATA.find(x=>x.id===SELECTION);
+  if(cible !== avant) return;                          // la fiche a changé entre-temps
+  const rue = p.street || p.name || "";
+  const ville = p.city || "";
+  const rueManuelle   = fmv("Rue")     && fmv("Rue")     !== GEO_POSE.rue;
+  const villeManuelle = fmv("Commune") && fmv("Commune") !== GEO_POSE.commune;
+  const propre = empreinteFiche() === EMPREINTE;
+  if(!fmv("Rue")     || (forcer && !rueManuelle))  { fm("Rue", rue);       GEO_POSE.rue = rue; }
+  if(!fmv("Commune") || (forcer && !villeManuelle)){ fm("Commune", ville); GEO_POSE.commune = ville; }
+  // Rien n'avait été saisi avant ce pré-remplissage : la fiche reste « vierge »,
+  // l'abandonner ne doit pas déclencher de demande de confirmation.
+  if(propre) EMPREINTE = empreinteFiche();
   if(cible) cible.code_insee = p.citycode || "";
 }
 
@@ -2124,7 +2394,13 @@ async function geocodeInverse(lat,lon,forcer){
    ========================================================================= */
 // fType a son propre gestionnaire (il recharge la liste des précisions avant de redessiner).
 ["fSousType","fCommune","fDu","fAu"].forEach(id=>document.getElementById(id).onchange=dessiner);
-document.getElementById("fTexte").oninput = dessiner;
+/* Anti-rebond : chaque caractère relançait un redessin complet de la carte, des
+   menus et du tableau. Même temporisation que la recherche d'adresse. */
+let FTEXTE_T = null;
+document.getElementById("fTexte").oninput = ()=>{
+  clearTimeout(FTEXTE_T);
+  FTEXTE_T = setTimeout(dessiner, 200);
+};
 document.getElementById("btnPeriodeRaz").onclick = ()=>{
   document.getElementById("fDu").value=""; document.getElementById("fAu").value=""; dessiner();
 };
@@ -2141,6 +2417,7 @@ document.getElementById("cleRedac").oninput = e=>{
 document.querySelectorAll(".fSt").forEach(c=>c.onchange=dessiner);
 document.getElementById("btnTable").onclick = ()=>{
   document.getElementById("tablewrap").classList.toggle("open");
+  if(!TABLE_A_JOUR) majTable(VUS);          // construit au moment où il devient visible
   setTimeout(()=>map.invalidateSize(),80);
 };
 
@@ -2216,7 +2493,7 @@ document.getElementById("btnTactile").onclick = ()=>{
 window.addEventListener("offline", ()=>
   badge("err","Hors ligne — saisie conservée sur l'appareil"));
 window.addEventListener("online", async ()=>{
-  if(!Store.distant()) return;
+  if(!Store.distant() || SELECTION || BROUILLON) return;
   DATA = await Store.charger(); dessiner();       // rattrapage dès le retour du réseau
 });
 
@@ -2288,8 +2565,7 @@ document.getElementById("fileJson").onchange = e=>{
       const arr = Array.isArray(j) ? j
         : (j.type==="FeatureCollection" ? j.features.map(ft=>Object.assign({},ft.properties,{
             lon:ft.geometry.coordinates[0], lat:ft.geometry.coordinates[1]})) : []);
-      DATA = fusionner(DATA, arr);
-      Store.ecrireLocal(DATA);
+      DATA = Store.ecrireLocal(fusionner(DATA, arr));
       dessiner();
       alert(arr.length + " enregistrement(s) importé(s).");
     }catch(err){ alert("Fichier illisible : " + err.message); }
@@ -2304,15 +2580,19 @@ document.getElementById("btnSync").onclick = async ()=>{ DATA = await Store.char
    DÉMARRAGE
    ========================================================================= */
 (async function(){
-  document.getElementById("storageInfo").textContent = Store.distant()
-    ? "Mode partagé : données synchronisées avec le classeur Google, copie locale de secours si le réseau tombe."
-    : "Mode local : données stockées dans ce navigateur uniquement. Exportez régulièrement.";
   badge("", Store.distant()?"Connexion…":"Mode local");
   majMode();
   DATA = await Store.charger();
+  majInfoStockage(DATA);
   dessiner();
   // resynchronisation automatique toutes les 3 minutes en mode partagé
-  if(Store.distant()) setInterval(async ()=>{ DATA = await Store.charger(); dessiner(); }, 180000);
+  // Une fiche ouverte n'est pas remplacée sous les doigts de l'agent : charger()
+  // remplace DATA (la base de enregistrerFiche) et redessine la carte. Le tour
+  // est sauté, celui d'après rattrapera.
+  if(Store.distant()) setInterval(async ()=>{
+    if(SELECTION || BROUILLON) return;
+    DATA = await Store.charger(); dessiner();
+  }, 180000);
 })();
 </script>
 </body>
