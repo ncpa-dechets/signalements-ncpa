@@ -1363,6 +1363,14 @@ let MODE_AJOUT = false;
 let MODE_SV = false;     // mode « clic sur la carte pour voir Street View »
 let BROUILLON = null;    // enregistrement en cours de création
 
+/* Le marqueur d'un signalement en cours de création vit dans sa propre couche :
+   dessiner() vide COUCHE à chaque filtre et à chaque resynchronisation, le point
+   provisoire y disparaissait au milieu de la saisie. */
+const BROUILLON_LAYER = L.layerGroup().addTo(map);
+/* « Repositionner le point » : l'état est tenu ici et non dans le marqueur, que
+   dessiner() recrée sans son mode déplacement. */
+let DEPLACEMENT_ACTIF = false;
+
 /* ---- modes exclusifs : les deux se disputent le clic carte ---- */
 function majModesUI(){
   document.getElementById("btnAdd").classList.toggle("active", MODE_AJOUT);
@@ -1644,6 +1652,8 @@ function icone(statut, sel){
 
 function dessiner(){
   COUCHE.clearLayers(); MARQUEURS = {};
+  // le brouillon vit hors de COUCHE : on le remet dans l'index des marqueurs
+  if(BROUILLON) BROUILLON_LAYER.eachLayer(l=>{ MARQUEURS[BROUILLON.id] = l; });
   const vus = filtrer();
   vus.forEach(r=>{
     const m = L.marker([r.lat,r.lon],{icon:icone(r.statut, r.id===SELECTION)});
@@ -1664,6 +1674,7 @@ function dessiner(){
   majCommunes();
   majStats(vus);
   majTable(vus);
+  majBoutonDeplacer();   // le marqueur sélectionné vient d'être recréé
 }
 
 function majStats(vus){
@@ -1725,6 +1736,9 @@ const fmtDate = d => d ? d.split("-").reverse().join("/") : "";
    ========================================================================= */
 function ouvrirFiche(id){
   const r = DATA.find(x=>x.id===id); if(!r) return;
+  if(!quitterFiche()) return;          // une saisie en cours allait être écrasée
+  BROUILLON_LAYER.clearLayers();
+  DEPLACEMENT_ACTIF = false;
   BROUILLON = null; SELECTION = id;
   document.getElementById("formTitre").textContent = "Fiche signalement";
   peupler(r);
@@ -1752,6 +1766,10 @@ function peupler(r){
   majPhotos();
   document.getElementById("svWrap").style.display="none";
   document.getElementById("svFrame").src="";
+  // Adresse déjà en fiche : elle fait référence tant que l'agent n'y touche pas
+  // (voir geocodeInverse), et sert de point zéro à la détection de modification.
+  GEO_POSE = {rue: r.rue||"", commune: r.commune||""};
+  EMPREINTE = empreinteFiche();
 }
 // Remplit le couple catégorie/précision. Un code absent du référentiel est ajouté
 // tel quel comme option, pour ne pas le perdre silencieusement à l'enregistrement.
@@ -1770,24 +1788,55 @@ function peuplerType(cat, sous){
 const fm = (n,v)=>{ document.getElementById("fm"+n).value = v; };
 const fmv = n => document.getElementById("fm"+n).value;
 
+/* Empreinte de la fiche affichée, relevée en fin de peupler() et à chaque
+   enregistrement. Comparée à la fermeture, elle dit si l'agent a saisi quelque
+   chose qu'il s'apprête à perdre. */
+const CHAMPS_FICHE = ["Type","SousType","Statut","Commune","Rue","Auteur","Date","Commentaire"];
+let EMPREINTE = "";
+const empreinteFiche = ()=>
+  CHAMPS_FICHE.map(fmv).join("\u001f") + "\u001f" + FICHE_PHOTOS.map(p=>p.id).join(",");
+
+/* Retourne false si l'agent refuse d'abandonner sa saisie. Sur un signalement
+   jamais enregistré, les photos déjà déposées sur le Drive sont retirées :
+   sinon elles resteraient dans le dossier sans rien pour les rattacher. */
+function quitterFiche(){
+  if(!SELECTION && !BROUILLON) return true;
+  if(empreinteFiche() === EMPREINTE) return true;
+  if(!confirm("Cette fiche contient des modifications non enregistrées.\n\nLes abandonner ?")) return false;
+  if(BROUILLON) FICHE_PHOTOS.forEach(p=>{
+    try{ Store.appeler({action:"delphoto", id:p.id}).catch(()=>{}); }catch(e){}
+  });
+  return true;
+}
+
 function ouvrirPanneau(){
   fermerTiroir();
   const f = document.getElementById("form");
   f.classList.add("open"); f.scrollTop = 0;
   setTimeout(()=>map.invalidateSize(),80);
 }
-function fermerPanneau(){
+/* force=true : fermeture consécutive à un enregistrement ou à une suppression,
+   il n'y a plus rien à perdre. Sinon on prévient avant de jeter la saisie. */
+function fermerPanneau(force){
+  if(!force && !quitterFiche()) return;
   document.getElementById("form").classList.remove("open");
-  document.getElementById("btnMove").textContent = "Repositionner le point";
-  SELECTION=null; BROUILLON=null; dessiner(); setTimeout(()=>map.invalidateSize(),80);
+  DEPLACEMENT_ACTIF = false;
+  BROUILLON_LAYER.clearLayers();
+  SELECTION=null; BROUILLON=null; EMPREINTE=""; dessiner();
+  setTimeout(()=>map.invalidateSize(),80);
 }
-document.getElementById("btnClose").onclick = fermerPanneau;
-document.getElementById("btnFormClose").onclick = fermerPanneau;
+// enveloppés : passés en gestionnaires directs, l'objet Event tiendrait lieu de « force »
+document.getElementById("btnClose").onclick = ()=>fermerPanneau();
+document.getElementById("btnFormClose").onclick = ()=>fermerPanneau();
 
 // Échap ferme la fiche. Garde-fou : la barre de recherche gère déjà Échap pour
 // replier ses suggestions et ne stoppe pas la propagation.
 document.addEventListener("keydown", e=>{
   if(e.key !== "Escape") return;
+  const lb = document.getElementById("lightbox");
+  if(lb.classList.contains("on")){
+    lb.classList.remove("on"); document.getElementById("lightboxImg").src=""; return;
+  }
   if(document.getElementById("qAdrList").classList.contains("open")) return;
   if(document.getElementById("panel").classList.contains("ouvert")){ fermerTiroir(); return; }
   if(document.getElementById("form").classList.contains("open")) fermerPanneau();
@@ -1821,10 +1870,11 @@ async function enregistrerFiche(fermer){
 
   if(!fermer){                              // la fiche reste ouverte
     BROUILLON = null; SELECTION = rec.id; dessiner();
+    EMPREINTE = empreinteFiche();           // ce qui est écrit n'est plus « à perdre »
     return;
   }
   BROUILLON = null; SELECTION = null;
-  fermerPanneau();                          // retour immédiat à la carte
+  fermerPanneau(true);                      // retour immédiat à la carte
   // Store.enregistrer a déjà posé un badge : on n'écrase pas un échec d'écriture.
   if(document.getElementById("syncBadge").className !== "err"){
     badge("ok", (nouveau ? "Signalement enregistré" : "Signalement mis à jour")
@@ -1837,14 +1887,25 @@ document.getElementById("btnDelete").onclick = async ()=>{
   if(!SELECTION) return;
   if(!confirm("Supprimer définitivement ce signalement ?")) return;
   DATA = await Store.supprimer(SELECTION);
-  fermerPanneau();
+  fermerPanneau(true);
 };
 
+/* Rejoue l'état de déplacement sur le marqueur courant et met le libellé du
+   bouton en accord. Appelée à la fin de dessiner() : sans cela, le marqueur
+   recréé redevenait fixe pendant que le bouton continuait d'annoncer
+   « glissez le point », et l'agent croyait déplacer un point immobile. */
+function majBoutonDeplacer(){
+  const b = document.getElementById("btnMove");
+  b.textContent = DEPLACEMENT_ACTIF ? "✓ Glissez le point puis recliquez ici"
+                                    : "Repositionner le point";
+  const m = MARQUEURS[SELECTION || (BROUILLON&&BROUILLON.id)];
+  if(!m || !m.dragging) return;
+  if(DEPLACEMENT_ACTIF) m.dragging.enable(); else m.dragging.disable();
+}
 document.getElementById("btnMove").onclick = ()=>{
-  const id = SELECTION || (BROUILLON&&BROUILLON.id);
-  const m = MARQUEURS[id]; if(!m) return;
-  if(m.dragging.enabled()){ m.dragging.disable(); document.getElementById("btnMove").textContent="Repositionner le point"; }
-  else { m.dragging.enable(); document.getElementById("btnMove").textContent="✓ Glissez le point puis recliquez ici"; }
+  if(!MARQUEURS[SELECTION || (BROUILLON&&BROUILLON.id)]) return;
+  DEPLACEMENT_ACTIF = !DEPLACEMENT_ACTIF;
+  majBoutonDeplacer();
 };
 
 document.getElementById("btnSv").onclick = ()=>{
@@ -1995,6 +2056,8 @@ document.getElementById("btnAdd").onclick = ()=>setModeAjout(!MODE_AJOUT);
    Appelée par le clic sur la carte ET par le bouton « Signaler ici ».
    precisionM : rayon d'incertitude GPS en mètres, affiché dans la fiche. */
 function creerSignalement(lat, lon, precisionM){
+  if(!quitterFiche()) return;          // une saisie en cours allait être écrasée
+  DEPLACEMENT_ACTIF = false;
   setModeAjout(false);
   fermerTiroir();
 
@@ -2016,7 +2079,8 @@ function creerSignalement(lat, lon, precisionM){
   peupler(rec); ouvrirPanneau();
 
   // marqueur provisoire
-  const m = L.marker([rec.lat,rec.lon],{icon:icone("signale",true)}).addTo(COUCHE);
+  BROUILLON_LAYER.clearLayers();
+  const m = L.marker([rec.lat,rec.lon],{icon:icone("signale",true)}).addTo(BROUILLON_LAYER);
   MARQUEURS[rec.id]=m;
   m.on("dragend",ev=>{
     const p=ev.target.getLatLng(); rec.lat=+p.lat.toFixed(6); rec.lon=+p.lng.toFixed(6);
@@ -2108,14 +2172,31 @@ async function banReverse(lat,lon){
   }catch(e){ return null; }   /* hors ligne : saisie manuelle */
 }
 
-/* Géocodage inverse BAN : pré-remplit rue + commune (jamais écrasé si déjà saisi) */
+/* Adresse posée par le dernier géocodage. Si le champ en diffère, c'est que
+   l'agent l'a corrigée à la main : un repositionnement ne doit pas l'effacer. */
+let GEO_POSE = {rue:"", commune:""};
+let GEO_SEQ = 0;
+
+/* Géocodage inverse BAN : pré-remplit rue + commune.
+   Jeton de séquence : deux repositionnements rapprochés partaient en course et
+   la réponse la plus lente gagnait, quitte à décrire l'ancienne position. */
 async function geocodeInverse(lat,lon,forcer){
+  const jeton = ++GEO_SEQ;
+  const avant = BROUILLON || DATA.find(x=>x.id===SELECTION);
   const p = await banReverse(lat,lon);
-  if(!p) return;
-  const rue = p.street || p.name || "";
-  if(forcer || !fmv("Rue"))     fm("Rue", rue);
-  if(forcer || !fmv("Commune")) fm("Commune", p.city || "");
+  if(!p || jeton !== GEO_SEQ) return;                  // réponse dépassée
   const cible = BROUILLON || DATA.find(x=>x.id===SELECTION);
+  if(cible !== avant) return;                          // la fiche a changé entre-temps
+  const rue = p.street || p.name || "";
+  const ville = p.city || "";
+  const rueManuelle   = fmv("Rue")     && fmv("Rue")     !== GEO_POSE.rue;
+  const villeManuelle = fmv("Commune") && fmv("Commune") !== GEO_POSE.commune;
+  const propre = empreinteFiche() === EMPREINTE;
+  if(!fmv("Rue")     || (forcer && !rueManuelle))  { fm("Rue", rue);       GEO_POSE.rue = rue; }
+  if(!fmv("Commune") || (forcer && !villeManuelle)){ fm("Commune", ville); GEO_POSE.commune = ville; }
+  // Rien n'avait été saisi avant ce pré-remplissage : la fiche reste « vierge »,
+  // l'abandonner ne doit pas déclencher de demande de confirmation.
+  if(propre) EMPREINTE = empreinteFiche();
   if(cible) cible.code_insee = p.citycode || "";
 }
 
@@ -2216,7 +2297,7 @@ document.getElementById("btnTactile").onclick = ()=>{
 window.addEventListener("offline", ()=>
   badge("err","Hors ligne — saisie conservée sur l'appareil"));
 window.addEventListener("online", async ()=>{
-  if(!Store.distant()) return;
+  if(!Store.distant() || SELECTION || BROUILLON) return;
   DATA = await Store.charger(); dessiner();       // rattrapage dès le retour du réseau
 });
 
@@ -2312,7 +2393,13 @@ document.getElementById("btnSync").onclick = async ()=>{ DATA = await Store.char
   DATA = await Store.charger();
   dessiner();
   // resynchronisation automatique toutes les 3 minutes en mode partagé
-  if(Store.distant()) setInterval(async ()=>{ DATA = await Store.charger(); dessiner(); }, 180000);
+  // Une fiche ouverte n'est pas remplacée sous les doigts de l'agent : charger()
+  // remplace DATA (la base de enregistrerFiche) et redessine la carte. Le tour
+  // est sauté, celui d'après rattrapera.
+  if(Store.distant()) setInterval(async ()=>{
+    if(SELECTION || BROUILLON) return;
+    DATA = await Store.charger(); dessiner();
+  }, 180000);
 })();
 </script>
 </body>
