@@ -1252,7 +1252,14 @@ const Store = {
   distant(){ return !!CONFIG.SYNC_URL; },
 
   lireLocal(){ try{ return JSON.parse(localStorage.getItem(LS_KEY)||"[]"); }catch(e){ return []; } },
-  ecrireLocal(list){ localStorage.setItem(LS_KEY, JSON.stringify(list)); },
+  // Renvoie la liste réellement écrite, purgée de ses fantômes.
+  ecrireLocal(list){
+    const net = purger(list);
+    const json = JSON.stringify(net);
+    localStorage.setItem(LS_KEY, json);
+    majInfoStockage(net, json);
+    return net;
+  },
 
   async charger(){
     const local = this.lireLocal();
@@ -1262,8 +1269,7 @@ const Store = {
       if(!r.ok) throw new Error(r.status);
       const j = await r.json();
       const distant = Array.isArray(j) ? j : (j.records||[]);
-      const fusion = fusionner(local, distant);
-      this.ecrireLocal(fusion);
+      const fusion = this.ecrireLocal(fusionner(local, distant));
       badge("ok","Synchronisé à " + new Date().toLocaleTimeString("fr-FR").slice(0,5));
       return fusion;
     }catch(e){
@@ -1280,13 +1286,13 @@ const Store = {
     const i = list.findIndex(x=>x.id===rec.id);
     rec._maj = new Date().toISOString();
     if(i>=0) list[i]=rec; else list.push(rec);
-    this.ecrireLocal(list);
+    const net = this.ecrireLocal(list);
     if(this.distant()){
       try{ await this.envoyer({action:"upsert", record:rec});
            badge("ok","Enregistré sur le serveur"); }
       catch(e){ badge("err","Local seulement : " + e.message); }
     }
-    return list;
+    return net;
   },
 
   // Suppression logique : le marqueur _del voyage jusqu'au serveur,
@@ -1296,15 +1302,38 @@ const Store = {
     const r = list.find(x=>x.id===id);
     if(!r) return list;
     r._del = true; r._maj = new Date().toISOString();
-    this.ecrireLocal(list);
+    const net = this.ecrireLocal(list);
     if(this.distant()){
       try{ await this.envoyer({action:"upsert", record:r});
            badge("ok","Suppression enregistrée"); }
       catch(e){ badge("err","Local seulement : " + e.message); }
     }
-    return list;
+    return net;
   }
 };
+
+/* Une suppression logique doit voyager jusqu'au serveur, mais pas y séjourner
+   indéfiniment : passé ce délai, tous les postes l'ont forcément vue passer.
+   Sans purge, le quota de localStorage (~5 Mo) finit par se remplir de fantômes
+   que filtrer() doit en plus écarter à chaque redessin. */
+const PURGE_JOURS = 90;
+function purger(list){
+  const limite = new Date(Date.now() - PURGE_JOURS*86400000).toISOString();
+  return list.filter(r => !(r._del && (r._maj||"") < limite));
+}
+
+/* Occupation réelle de la réserve du navigateur. L'encart n'affichait qu'un
+   texte figé, sans jamais dire où en était le stockage. */
+function majInfoStockage(list, json){
+  const el = document.getElementById("storageInfo");
+  if(!el) return;
+  const ko = Math.round((json || JSON.stringify(list||[])).length * 2 / 1024);  // UTF-16
+  const vivants = (list||[]).filter(r=>!r._del).length;
+  el.textContent = (Store.distant()
+      ? "Mode partagé : données synchronisées avec le classeur Google, copie locale de secours si le réseau tombe. "
+      : "Mode local : données stockées dans ce navigateur uniquement. Exportez régulièrement. ")
+    + vivants + " signalement(s) — " + ko + " Ko utilisés sur environ 5 000 Ko.";
+}
 
 // Fusion local/distant : la version la plus récemment modifiée gagne.
 function fusionner(a,b){
@@ -1358,6 +1387,7 @@ map.on("mousemove", e=>{
 let DATA = [];
 let COUCHE = L.layerGroup().addTo(map);
 let MARQUEURS = {};      // id -> marker
+let VUS = [];            // dernier jeu passé au travers des filtres
 let SELECTION = null;    // id sélectionné
 let MODE_AJOUT = false;
 let MODE_SV = false;     // mode « clic sur la carte pour voir Street View »
@@ -1654,7 +1684,7 @@ function dessiner(){
   COUCHE.clearLayers(); MARQUEURS = {};
   // le brouillon vit hors de COUCHE : on le remet dans l'index des marqueurs
   if(BROUILLON) BROUILLON_LAYER.eachLayer(l=>{ MARQUEURS[BROUILLON.id] = l; });
-  const vus = filtrer();
+  const vus = VUS = filtrer();
   vus.forEach(r=>{
     const m = L.marker([r.lat,r.lon],{icon:icone(r.statut, r.id===SELECTION)});
     m.on("click", ()=>{
@@ -1684,15 +1714,30 @@ function majStats(vus){
   document.getElementById("stReg").textContent = vus.filter(r=>r.statut==="regle").length;
 }
 
+/* La liste ne dépend que de DATA, jamais des filtres : on ne reconstruit le menu
+   que lorsqu'elle change réellement, et non à chaque frappe dans le filtre texte. */
+let COMMUNES_SIG = null;
 function majCommunes(){
-  const sel = document.getElementById("fCommune"); const cur = sel.value;
   const list = [...new Set(DATA.filter(r=>!r._del).map(r=>r.commune).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"fr"));
-  sel.innerHTML = '<option value="">Toutes</option>'+list.map(c=>`<option>${c}</option>`).join("");
+  const sig = list.join("\u001f");
+  if(sig === COMMUNES_SIG) return;
+  COMMUNES_SIG = sig;
+  const sel = document.getElementById("fCommune"); const cur = sel.value;
+  sel.innerHTML = '<option value="">Toutes</option>'+list.map(c=>`<option>${esc(c)}</option>`).join("");
   if(list.includes(cur)) sel.value = cur;
 }
 
 let TRI = {k:"date_signalement", asc:false};
+/* Le tableau n'est reconstruit que lorsqu'il est déplié. En mode tactile il est
+   masqué et son bouton retiré de l'en-tête : on fabriquait à chaque redessin des
+   milliers de lignes de HTML que personne ne verrait jamais, sur l'appareil le
+   plus lent du parc. TABLE_A_JOUR dit s'il faut le construire à l'ouverture. */
+let TABLE_A_JOUR = false;
 function majTable(vus){
+  if(!document.getElementById("tablewrap").classList.contains("open")){
+    TABLE_A_JOUR = false; return;
+  }
+  TABLE_A_JOUR = true;
   const tb = document.querySelector("#tbl tbody");
   const l = [...vus].sort((a,b)=>{
     const x=valeurTri(a,TRI.k), y=valeurTri(b,TRI.k);
@@ -1708,7 +1753,8 @@ function majTable(vus){
   });
 }
 document.querySelectorAll("#tbl th").forEach(th=>{
-  th.onclick = ()=>{ const k=th.dataset.k; TRI = {k, asc: TRI.k===k ? !TRI.asc : true}; dessiner(); };
+  // Le tri ne concerne que le tableau : inutile de repasser sur la carte.
+  th.onclick = ()=>{ const k=th.dataset.k; TRI = {k, asc: TRI.k===k ? !TRI.asc : true}; majTable(VUS); };
 });
 
 const esc = s => (s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -2205,7 +2251,13 @@ async function geocodeInverse(lat,lon,forcer){
    ========================================================================= */
 // fType a son propre gestionnaire (il recharge la liste des précisions avant de redessiner).
 ["fSousType","fCommune","fDu","fAu"].forEach(id=>document.getElementById(id).onchange=dessiner);
-document.getElementById("fTexte").oninput = dessiner;
+/* Anti-rebond : chaque caractère relançait un redessin complet de la carte, des
+   menus et du tableau. Même temporisation que la recherche d'adresse. */
+let FTEXTE_T = null;
+document.getElementById("fTexte").oninput = ()=>{
+  clearTimeout(FTEXTE_T);
+  FTEXTE_T = setTimeout(dessiner, 200);
+};
 document.getElementById("btnPeriodeRaz").onclick = ()=>{
   document.getElementById("fDu").value=""; document.getElementById("fAu").value=""; dessiner();
 };
@@ -2222,6 +2274,7 @@ document.getElementById("cleRedac").oninput = e=>{
 document.querySelectorAll(".fSt").forEach(c=>c.onchange=dessiner);
 document.getElementById("btnTable").onclick = ()=>{
   document.getElementById("tablewrap").classList.toggle("open");
+  if(!TABLE_A_JOUR) majTable(VUS);          // construit au moment où il devient visible
   setTimeout(()=>map.invalidateSize(),80);
 };
 
@@ -2369,8 +2422,7 @@ document.getElementById("fileJson").onchange = e=>{
       const arr = Array.isArray(j) ? j
         : (j.type==="FeatureCollection" ? j.features.map(ft=>Object.assign({},ft.properties,{
             lon:ft.geometry.coordinates[0], lat:ft.geometry.coordinates[1]})) : []);
-      DATA = fusionner(DATA, arr);
-      Store.ecrireLocal(DATA);
+      DATA = Store.ecrireLocal(fusionner(DATA, arr));
       dessiner();
       alert(arr.length + " enregistrement(s) importé(s).");
     }catch(err){ alert("Fichier illisible : " + err.message); }
@@ -2385,12 +2437,10 @@ document.getElementById("btnSync").onclick = async ()=>{ DATA = await Store.char
    DÉMARRAGE
    ========================================================================= */
 (async function(){
-  document.getElementById("storageInfo").textContent = Store.distant()
-    ? "Mode partagé : données synchronisées avec le classeur Google, copie locale de secours si le réseau tombe."
-    : "Mode local : données stockées dans ce navigateur uniquement. Exportez régulièrement.";
   badge("", Store.distant()?"Connexion…":"Mode local");
   majMode();
   DATA = await Store.charger();
+  majInfoStockage(DATA);
   dessiner();
   // resynchronisation automatique toutes les 3 minutes en mode partagé
   // Une fiche ouverte n'est pas remplacée sous les doigts de l'agent : charger()
